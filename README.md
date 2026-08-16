@@ -25,12 +25,34 @@ This project does the unglamorous work of handling that correctly — login, coo
 
 ### 1. Install
 
+**With [uv](https://docs.astral.sh/uv/) (recommended — no venv management needed):**
+
+```bash
+# Run directly without installing (uvx downloads + caches automatically)
+uvx hedgedoc-mcp
+
+# Or install as a persistent tool
+uv tool install hedgedoc-mcp
+```
+
+> **Not yet on PyPI?** Run straight from GitHub instead — same zero-install experience:
+> ```bash
+> uvx --from git+https://github.com/kanishkpachauri/hedgedoc-mcp hedgedoc-mcp
+> ```
+> Use this exact form in the agent config examples below (as `args`) until the package is published.
+
+**With pip:**
+
 ```bash
 pip install hedgedoc-mcp
-# or, from source:
+```
+
+**From source:**
+
+```bash
 git clone https://github.com/kanishkpachauri/hedgedoc-mcp.git
 cd hedgedoc-mcp
-pip install -e .
+uv pip install -e .          # or: pip install -e .
 ```
 
 ### 2. Get a session cookie
@@ -64,7 +86,7 @@ At minimum you need `HEDGEDOC_URL` plus either the cookie or the email+password 
 <summary><b>Claude Code</b></summary>
 
 ```bash
-claude mcp add hedgedoc -- hedgedoc-mcp
+claude mcp add hedgedoc -- uvx hedgedoc-mcp
 ```
 
 Or add to `.claude/mcp.json`:
@@ -73,7 +95,8 @@ Or add to `.claude/mcp.json`:
 {
   "mcpServers": {
     "hedgedoc": {
-      "command": "hedgedoc-mcp",
+      "command": "uvx",
+      "args": ["hedgedoc-mcp"],
       "env": {
         "HEDGEDOC_URL": "https://md.example.com",
         "HEDGEDOC_EMAIL": "you@example.com",
@@ -93,7 +116,8 @@ Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.hedgedoc]
-command = "hedgedoc-mcp"
+command = "uvx"
+args = ["hedgedoc-mcp"]
 env = { HEDGEDOC_URL = "https://md.example.com", HEDGEDOC_EMAIL = "you@example.com", HEDGEDOC_PASSWORD = "your-password" }
 ```
 
@@ -102,14 +126,14 @@ env = { HEDGEDOC_URL = "https://md.example.com", HEDGEDOC_EMAIL = "you@example.c
 <details>
 <summary><b>Hermes</b></summary>
 
-Add an MCP server entry in your Hermes config pointing at the `hedgedoc-mcp` command with the same environment variables. See the [Hermes MCP docs](https://docs.hermes.dev) for the exact config location on your install.
+Add an MCP server entry in your Hermes config with `command: uvx`, `args: [hedgedoc-mcp]`, and the same environment variables. See the [Hermes MCP docs](https://docs.hermes.dev) for the exact config location on your install.
 
 </details>
 
 <details>
 <summary><b>Any other MCP client</b></summary>
 
-This is a standard stdio MCP server. Point your client at the `hedgedoc-mcp` executable with the environment variables above set, and it will discover the 6 tools automatically via the standard MCP `list_tools` handshake.
+This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or the installed `hedgedoc-mcp` executable) with the environment variables above set, and it will discover the 6 tools automatically via the standard MCP `list_tools` handshake. Using `uvx` means the client never needs a separate install step — `uv` downloads and caches the package on first run.
 
 </details>
 

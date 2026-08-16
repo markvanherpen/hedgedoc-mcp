@@ -1,7 +1,8 @@
 {
   "mcpServers": {
     "hedgedoc": {
-      "command": "hedgedoc-mcp",
+      "command": "uvx",
+      "args": ["hedgedoc-mcp"],
       "env": {
         "HEDGEDOC_URL": "https://md.example.com",
         "HEDGEDOC_EMAIL": "you@example.com",
