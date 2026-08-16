@@ -1,4 +1,5 @@
 """Unit tests for hedgedoc_mcp.auth (Config + build_client fallback logic)."""
+
 from __future__ import annotations
 
 import pytest
@@ -41,7 +42,9 @@ def test_config_from_env_with_login(monkeypatch):
 
 
 def test_build_client_uses_valid_cookie(mocker):
-    config = Config(base_url="https://md.example.com", session_cookie="valid", email=None, password=None)
+    config = Config(
+        base_url="https://md.example.com", session_cookie="valid", email=None, password=None
+    )
     mocker.patch("hedgedoc_mcp.auth.HedgeDocClient.whoami", return_value={"status": "ok"})
     login_spy = mocker.patch("hedgedoc_mcp.auth.HedgeDocClient.login")
 
@@ -66,7 +69,9 @@ def test_build_client_falls_back_to_login_on_expired_cookie(mocker):
 
 
 def test_build_client_raises_when_cookie_expired_and_no_login(mocker):
-    config = Config(base_url="https://md.example.com", session_cookie="expired", email=None, password=None)
+    config = Config(
+        base_url="https://md.example.com", session_cookie="expired", email=None, password=None
+    )
     mocker.patch(
         "hedgedoc_mcp.auth.HedgeDocClient.whoami", side_effect=SessionExpiredError("expired")
     )
@@ -76,7 +81,9 @@ def test_build_client_raises_when_cookie_expired_and_no_login(mocker):
 
 
 def test_build_client_uses_login_when_no_cookie(mocker):
-    config = Config(base_url="https://md.example.com", session_cookie=None, email="a@b.com", password="secret")
+    config = Config(
+        base_url="https://md.example.com", session_cookie=None, email="a@b.com", password="secret"
+    )
     login_spy = mocker.patch("hedgedoc_mcp.auth.HedgeDocClient.login")
 
     build_client(config)

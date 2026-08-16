@@ -48,3 +48,10 @@ packages = ["src/hedgedoc_mcp"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]   # pycodestyle, pyflakes, warnings, isort, pyupgrade
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

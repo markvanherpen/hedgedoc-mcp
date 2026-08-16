@@ -16,6 +16,7 @@ Endpoints used (from HedgeDoc's own OpenAPI spec, version 1.11.1):
     GET  /me                     -- verify session / get user info
     GET  /history                -- recently viewed/pinned notes (auth required)
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

@@ -1,4 +1,5 @@
 """Unit tests for hedgedoc_mcp.client — mocked HTTP, no real HedgeDoc needed."""
+
 from __future__ import annotations
 
 import pytest

@@ -14,6 +14,7 @@ At least one of (HEDGEDOC_SESSION_COOKIE) or (HEDGEDOC_EMAIL + HEDGEDOC_PASSWORD
 must be set. If both are set, the session cookie is tried first and the
 client transparently falls back to a fresh login if it has expired.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -117,7 +118,10 @@ def cli_login() -> None:
         print("Error: --url or HEDGEDOC_URL is required", file=sys.stderr)
         sys.exit(1)
     if not args.email or not args.password:
-        print("Error: --email/--password or HEDGEDOC_EMAIL/HEDGEDOC_PASSWORD required", file=sys.stderr)
+        print(
+            "Error: --email/--password or HEDGEDOC_EMAIL/HEDGEDOC_PASSWORD required",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     client = HedgeDocClient(args.url)

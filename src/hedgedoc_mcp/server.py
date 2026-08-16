@@ -12,6 +12,7 @@ Any MCP-compatible agent (Claude Code, Codex, Hermes, custom clients) can
 load this server and get direct read/write access to a self-hosted
 HedgeDoc instance -- see README.md for setup instructions per client.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -59,7 +60,8 @@ async def list_tools() -> list[Tool]:
                 "Use `alias` to assign a human-readable slug such as 'q3-research-notes' — "
                 "alias-based notes can later be overwritten with hedgedoc_update_note. "
                 "Notes created without an alias get a random ID and cannot be updated over HTTP. "
-                "Alias support requires FreeURL mode enabled on the server (CMD_ALLOW_FREEURL=true)."
+                "Alias support requires FreeURL mode enabled on the server "
+                "(CMD_ALLOW_FREEURL=true)."
             ),
             inputSchema={
                 "type": "object",
@@ -130,7 +132,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "content": {
                         "type": "string",
-                        "description": "New full markdown content. Replaces the note's current content entirely.",
+                        "description": (
+                            "New full markdown content. "
+                            "Replaces the note's current content entirely."
+                        ),
                     },
                 },
                 "required": ["note_id", "content"],
@@ -142,7 +147,8 @@ async def list_tools() -> list[Tool]:
                 "Get metadata for a note. "
                 "Returns JSON with: 'title' (string), 'description' (string or null), "
                 "'viewcount' (integer — total views), "
-                "'createtime' and 'updatetime' (ISO 8601 timestamps, e.g. '2026-08-16T10:30:00.000Z'). "
+                "'createtime' and 'updatetime' "
+                "(ISO 8601 timestamps, e.g. '2026-08-16T10:30:00.000Z'). "
                 "This is a public endpoint — no authentication required."
             ),
             inputSchema={
