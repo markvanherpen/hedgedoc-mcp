@@ -7,7 +7,7 @@ name = "hedgedoc-mcp"
 version = "0.1.0"
 description = "MCP server for HedgeDoc 1.x — create, read, and manage notes on a self-hosted HedgeDoc instance from any MCP-compatible AI agent."
 readme = "README.md"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [
     { name = "Kanishk Pachauri", email = "eq.itskanishkp@gmail.com" }
 ]
@@ -21,6 +21,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
