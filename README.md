@@ -37,7 +37,7 @@ uv tool install hedgedoc-mcp
 
 > **Not yet on PyPI?** Run straight from GitHub instead — same zero-install experience:
 > ```bash
-> uvx --from git+https://github.com/kanishkpachauri/hedgedoc-mcp hedgedoc-mcp
+> uvx --from git+https://github.com/mrsunglasses-experiments/hedgedoc-mcp hedgedoc-mcp
 > ```
 > Use this exact form in the agent config examples below (as `args`) until the package is published.
 
@@ -50,7 +50,7 @@ pip install hedgedoc-mcp
 **From source:**
 
 ```bash
-git clone https://github.com/kanishkpachauri/hedgedoc-mcp.git
+git clone https://github.com/mrsunglasses-experiments/hedgedoc-mcp.git
 cd hedgedoc-mcp
 uv pip install -e .          # or: pip install -e .
 ```
@@ -178,7 +178,7 @@ These are constraints of the HedgeDoc 1.x server itself, not this client — the
 ## Development
 
 ```bash
-git clone https://github.com/kanishkpachauri/hedgedoc-mcp.git
+git clone https://github.com/mrsunglasses-experiments/hedgedoc-mcp.git
 cd hedgedoc-mcp
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"

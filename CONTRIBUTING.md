@@ -6,7 +6,7 @@ here's how to get productive quickly.
 ## Setup
 
 ```bash
-git clone https://github.com/kanishkpachauri/hedgedoc-mcp.git
+git clone https://github.com/mrsunglasses-experiments/hedgedoc-mcp.git
 cd hedgedoc-mcp
 uv venv && source .venv/bin/activate
 uv pip install -e ".[dev]"

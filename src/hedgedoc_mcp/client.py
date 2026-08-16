@@ -99,7 +99,7 @@ class HedgeDocClient:
         from a browser's cookie jar or `cookies.txt`) -- it is unquoted
         automatically if needed.
         """
-        value = unquote(cookie_value) if "%3A" in cookie_value else cookie_value
+        value = unquote(cookie_value)
         domain = self.base_url.split("//", 1)[-1].split("/", 1)[0]
         self._session.cookies.set("connect.sid", value, domain=domain)
 
@@ -186,12 +186,19 @@ class HedgeDocClient:
                 "In-place updates via HTTP only work for notes created with a "
                 "custom alias under FreeURL mode. See docs/LIMITATIONS.md."
             )
+        location = resp.headers.get("Location", "")
+        if location in ("", "/", self.base_url, f"{self.base_url}/"):
+            raise SessionExpiredError(
+                "Note update redirected to the home page instead of the note. "
+                "This usually means the session is expired. Call login() again."
+            )
 
     def note_info(self, note_id: str) -> NoteInfo:
         """Fetch metadata: title, description, viewcount, timestamps."""
         resp = self._session.get(f"{self.base_url}/{note_id}/info", timeout=self.timeout)
         if resp.status_code == 404:
             raise HedgeDocError(f"Note '{note_id}' not found.")
+        resp.raise_for_status()
         data = resp.json()
         return NoteInfo(
             title=data.get("title", "Untitled"),
@@ -204,6 +211,7 @@ class HedgeDocClient:
     def history(self) -> list[dict]:
         """List the logged-in user's recently viewed/pinned notes. Requires auth."""
         resp = self._session.get(f"{self.base_url}/history", timeout=self.timeout)
+        resp.raise_for_status()
         data = resp.json()
         if isinstance(data, dict) and data.get("status") == "forbidden":
             raise SessionExpiredError("Session expired. Call login() again.")

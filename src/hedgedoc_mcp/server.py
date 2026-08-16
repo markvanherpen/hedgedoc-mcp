@@ -53,22 +53,31 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="hedgedoc_create_note",
             description=(
-                "Create a new note on the HedgeDoc instance. Returns the note's "
-                "unique ID and full URL. Use `alias` to give it a memorable, "
-                "human-readable URL slug (requires FreeURL mode enabled on the "
-                "server) instead of a random ID."
+                "Create a new note on the HedgeDoc instance. "
+                "Returns JSON with two fields: 'note_id' (the unique identifier / URL slug) "
+                "and 'url' (the full URL where the note can be viewed or shared). "
+                "Use `alias` to assign a human-readable slug such as 'q3-research-notes' — "
+                "alias-based notes can later be overwritten with hedgedoc_update_note. "
+                "Notes created without an alias get a random ID and cannot be updated over HTTP. "
+                "Alias support requires FreeURL mode enabled on the server (CMD_ALLOW_FREEURL=true)."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "content": {
                         "type": "string",
-                        "description": "Markdown content for the note.",
+                        "description": (
+                            "Full markdown content for the note. "
+                            "Supports standard CommonMark plus HedgeDoc extensions "
+                            "(diagrams, math, front matter, etc.)."
+                        ),
                     },
                     "alias": {
                         "type": "string",
                         "description": (
-                            "Optional custom URL slug, e.g. 'q3-research-notes'. "
+                            "Optional custom URL slug, e.g. 'meeting-2026-08-16' or 'q3-research'. "
+                            "Must be URL-safe (letters, digits, hyphens). "
+                            "Required if you intend to update this note later. "
                             "Requires FreeURL mode on the server."
                         ),
                     },
@@ -78,11 +87,22 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="hedgedoc_read_note",
-            description="Fetch the raw markdown content of an existing note by its ID or alias.",
+            description=(
+                "Fetch the raw markdown content of an existing note by its ID or alias. "
+                "Returns the note's markdown as a plain string. "
+                "This is a public endpoint — no authentication is required to read notes "
+                "on instances that allow public access."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "note_id": {"type": "string", "description": "Note ID or alias."},
+                    "note_id": {
+                        "type": "string",
+                        "description": (
+                            "The note's unique ID (e.g. 'AbC123XyZ') or custom alias "
+                            "(e.g. 'my-meeting-notes'). Both forms are accepted."
+                        ),
+                    },
                 },
                 "required": ["note_id"],
             },
@@ -90,40 +110,71 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="hedgedoc_update_note",
             description=(
-                "Overwrite the content of an existing note. Only works for notes "
-                "created with a custom alias (see hedgedoc_create_note's `alias` "
-                "parameter) because HedgeDoc 1.x has no generic HTTP update "
-                "endpoint -- random-ID notes can only be edited live in the "
-                "browser or recreated. See docs/LIMITATIONS.md."
+                "Overwrite the entire content of an existing note. "
+                "IMPORTANT: this only works for notes that were originally created with a custom "
+                "alias (via hedgedoc_create_note's `alias` parameter). "
+                "HedgeDoc 1.x has no REST update endpoint for random-ID notes — "
+                "those can only be edited live in the browser. "
+                "If the target note was created without an alias, this call will fail. "
+                "The update is a full overwrite — partial/patch updates are not supported."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "note_id": {"type": "string", "description": "Note ID or alias to overwrite."},
-                    "content": {"type": "string", "description": "New markdown content."},
+                    "note_id": {
+                        "type": "string",
+                        "description": (
+                            "The custom alias of the note to overwrite (e.g. 'my-meeting-notes'). "
+                            "Random-ID notes cannot be updated over HTTP."
+                        ),
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "New full markdown content. Replaces the note's current content entirely.",
+                    },
                 },
                 "required": ["note_id", "content"],
             },
         ),
         Tool(
             name="hedgedoc_note_info",
-            description="Get metadata for a note: title, description, view count, created/updated timestamps.",
+            description=(
+                "Get metadata for a note. "
+                "Returns JSON with: 'title' (string), 'description' (string or null), "
+                "'viewcount' (integer — total views), "
+                "'createtime' and 'updatetime' (ISO 8601 timestamps, e.g. '2026-08-16T10:30:00.000Z'). "
+                "This is a public endpoint — no authentication required."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "note_id": {"type": "string", "description": "Note ID or alias."},
+                    "note_id": {
+                        "type": "string",
+                        "description": "Note ID or alias.",
+                    },
                 },
                 "required": ["note_id"],
             },
         ),
         Tool(
             name="hedgedoc_whoami",
-            description="Verify the current session is valid and show which user is logged in.",
+            description=(
+                "Verify the current session is valid and return the logged-in user's profile. "
+                "Returns JSON with user info (name, email, photo, provider, etc.). "
+                "Call this to confirm the server is correctly authenticated before "
+                "attempting write operations, or to identify which account is active."
+            ),
             inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="hedgedoc_list_history",
-            description="List the logged-in user's recently viewed and pinned notes.",
+            description=(
+                "List the logged-in user's recently viewed and pinned notes. "
+                "Returns a JSON array of note objects. Each object includes: "
+                "'id' (note ID or alias), 'text' (note title), 'tags' (array of strings), "
+                "'pinned' (boolean), and 'time' (last-viewed timestamp in milliseconds). "
+                "Requires a valid session — will raise an error if not authenticated."
+            ),
             inputSchema={"type": "object", "properties": {}},
         ),
     ]
