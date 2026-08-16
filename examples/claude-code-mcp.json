@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "hedgedoc": {
+      "command": "hedgedoc-mcp",
+      "env": {
+        "HEDGEDOC_URL": "https://md.example.com",
+        "HEDGEDOC_EMAIL": "you@example.com",
+        "HEDGEDOC_PASSWORD": "your-password"
+      }
+    }
+  }
+}
