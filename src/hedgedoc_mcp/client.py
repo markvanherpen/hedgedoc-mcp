@@ -19,10 +19,14 @@ Endpoints used (from HedgeDoc's own OpenAPI spec, version 1.11.1):
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
 
 import requests
+import socketio
+
+PERMISSION_VALUES = frozenset({"freely", "editable", "limited", "locked", "protected", "private"})
 
 
 class HedgeDocError(RuntimeError):
@@ -35,6 +39,14 @@ class SessionExpiredError(HedgeDocError):
     Callers should catch this and trigger a re-login (via `login()`) rather
     than treating it as a generic failure.
     """
+
+
+class PermissionChangeError(HedgeDocError):
+    """Raised when a note exists but its requested permission was not applied."""
+
+    def __init__(self, message: str, note: NoteResult | None = None):
+        super().__init__(message)
+        self.note = note
 
 
 @dataclass
@@ -126,7 +138,9 @@ class HedgeDocClient:
 
     # -- Notes ------------------------------------------------------------
 
-    def create_note(self, content: str, alias: str | None = None) -> NoteResult:
+    def create_note(
+        self, content: str, alias: str | None = None, permission: str | None = None
+    ) -> NoteResult:
         """Create a new note. Returns its ID and full URL.
 
         If the instance requires login for note creation (the common case)
@@ -153,7 +167,120 @@ class HedgeDocClient:
 
         note_url = location if location.startswith("http") else f"{self.base_url}{location}"
         note_id = note_url.rstrip("/").rsplit("/", 1)[-1]
-        return NoteResult(note_id=note_id, url=note_url)
+        result = NoteResult(note_id=note_id, url=note_url)
+        if permission is not None:
+            try:
+                self.set_permission(note_id, permission)
+            except HedgeDocError as exc:
+                raise PermissionChangeError(
+                    f"Note was created at {note_url}, but permission '{permission}' "
+                    f"was not confirmed. The note may still have its server-default "
+                    f"permission; inspect it before sharing. {exc}",
+                    note=result,
+                ) from exc
+        return result
+
+    def get_permission(self, note_id: str) -> str:
+        """Read a note's persisted permission through HedgeDoc's realtime state."""
+        return self._realtime_permission(note_id)
+
+    def set_permission(self, note_id: str, permission: str) -> str:
+        """Set and persist a note permission through HedgeDoc's realtime channel.
+
+        HedgeDoc accepts this operation only from the note owner. Its server does
+        not acknowledge denials or database errors, so success is recognized from
+        the post-update broadcast and then verified using a fresh connection.
+        """
+        if permission not in PERMISSION_VALUES:
+            allowed = ", ".join(sorted(PERMISSION_VALUES))
+            raise HedgeDocError(f"Invalid permission '{permission}'. Allowed values: {allowed}.")
+
+        observed = self._realtime_permission(note_id, requested=permission)
+        if observed != permission:
+            raise PermissionChangeError(
+                f"HedgeDoc did not confirm permission '{permission}' for note '{note_id}'."
+            )
+
+        persisted = self._realtime_permission(note_id)
+        if persisted != permission:
+            raise PermissionChangeError(
+                f"HedgeDoc reported permission '{observed}', but a fresh connection read "
+                f"'{persisted}' for note '{note_id}'."
+            )
+        return persisted
+
+    def _realtime_permission(self, note_id: str, requested: str | None = None) -> str:
+        state: dict[str, str | None] = {"permission": None, "error": None}
+        ready = threading.Event()
+        changed = threading.Event()
+        client = socketio.Client(http_session=self._session, reconnection=False)
+
+        @client.on("refresh")
+        def on_refresh(data):
+            permission = data.get("permission") if isinstance(data, dict) else None
+            if permission in PERMISSION_VALUES:
+                state["permission"] = permission
+                ready.set()
+
+        @client.on("permission")
+        def on_permission(data):
+            permission = data.get("permission") if isinstance(data, dict) else None
+            if permission in PERMISSION_VALUES:
+                state["permission"] = permission
+                changed.set()
+
+        @client.on("info")
+        def on_info(data):
+            code = data.get("code") if isinstance(data, dict) else None
+            state["error"] = f"HedgeDoc realtime connection failed (HTTP {code or 'unknown'})."
+            ready.set()
+            changed.set()
+
+        try:
+            client.connect(
+                f"{self.base_url}?noteId={quote(note_id, safe='')}",
+                socketio_path=self._socketio_path(),
+                headers={"Cookie": self._session_cookie_header()},
+                wait_timeout=self.timeout,
+            )
+            if not ready.wait(self.timeout):
+                raise HedgeDocError(f"Timed out reading permission for note '{note_id}'.")
+            if state["error"]:
+                raise HedgeDocError(state["error"])
+
+            if requested is not None:
+                client.emit("permission", requested)
+                if not changed.wait(self.timeout):
+                    raise PermissionChangeError(
+                        f"HedgeDoc did not confirm permission '{requested}' for note '{note_id}'; "
+                        "the request may have been denied or failed."
+                    )
+                if state["error"]:
+                    raise HedgeDocError(state["error"])
+            return str(state["permission"])
+        except socketio.exceptions.ConnectionError as exc:
+            if "AUTH failed" in str(exc):
+                raise SessionExpiredError(
+                    "Session cookie is missing, expired, or invalid. Call login() again."
+                ) from exc
+            raise HedgeDocError(f"Could not connect to HedgeDoc realtime service: {exc}") from exc
+        finally:
+            if client.connected:
+                client.disconnect()
+
+    def _socketio_path(self) -> str:
+        from urllib.parse import urlsplit
+
+        url_path = urlsplit(self.base_url).path.strip("/")
+        return f"{url_path}/socket.io" if url_path else "socket.io"
+
+    def _session_cookie_header(self) -> str:
+        cookie = self.get_session_cookie(encoded=False)
+        if not cookie:
+            raise SessionExpiredError(
+                "Session cookie is missing. Permission operations require authentication."
+            )
+        return f"connect.sid={cookie}"
 
     def read_note(self, note_id: str) -> str:
         """Fetch the raw markdown content of a note. Public endpoint, no auth needed."""

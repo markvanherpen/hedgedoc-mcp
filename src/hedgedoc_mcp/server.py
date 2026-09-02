@@ -83,8 +83,50 @@ async def list_tools() -> list[Tool]:
                             "Requires FreeURL mode on the server."
                         ),
                     },
+                    "permission": {
+                        "type": "string",
+                        "enum": [
+                            "freely",
+                            "editable",
+                            "limited",
+                            "locked",
+                            "protected",
+                            "private",
+                        ],
+                        "description": (
+                            "Optional HedgeDoc permission. If omitted, the server default is used. "
+                            "Use 'private' for owner-only access, 'protected' for authenticated "
+                            "readers with owner-only editing, or 'limited' for authenticated "
+                            "editing."
+                        ),
+                    },
                 },
                 "required": ["content"],
+            },
+        ),
+        Tool(
+            name="hedgedoc_set_permission",
+            description=(
+                "Change a note's real HedgeDoc permission. Only the note owner can do this. "
+                "The change is persisted and verified through HedgeDoc's realtime service."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string", "description": "Note ID or alias."},
+                    "permission": {
+                        "type": "string",
+                        "enum": [
+                            "freely",
+                            "editable",
+                            "limited",
+                            "locked",
+                            "protected",
+                            "private",
+                        ],
+                    },
+                },
+                "required": ["note_id", "permission"],
             },
         ),
         Tool(
@@ -207,8 +249,14 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 def _dispatch(client, name: str, arguments: dict) -> str:
     if name == "hedgedoc_create_note":
-        result = client.create_note(arguments["content"], arguments.get("alias"))
+        result = client.create_note(
+            arguments["content"], arguments.get("alias"), arguments.get("permission")
+        )
         return json.dumps({"note_id": result.note_id, "url": result.url}, indent=2)
+
+    if name == "hedgedoc_set_permission":
+        permission = client.set_permission(arguments["note_id"], arguments["permission"])
+        return json.dumps({"note_id": arguments["note_id"], "permission": permission}, indent=2)
 
     if name == "hedgedoc_read_note":
         content = client.read_note(arguments["note_id"])

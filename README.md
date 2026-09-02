@@ -133,7 +133,7 @@ Add an MCP server entry in your Hermes config with `command: uvx`, `args: [hedge
 <details>
 <summary><b>Any other MCP client</b></summary>
 
-This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or the installed `hedgedoc-mcp` executable) with the environment variables above set, and it will discover the 6 tools automatically via the standard MCP `list_tools` handshake. Using `uvx` means the client never needs a separate install step — `uv` downloads and caches the package on first run.
+This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or the installed `hedgedoc-mcp` executable) with the environment variables above set, and it will discover the tools automatically via the standard MCP `list_tools` handshake. Using `uvx` means the client never needs a separate install step — `uv` downloads and caches the package on first run.
 
 </details>
 
@@ -141,7 +141,8 @@ This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or
 
 | Tool | Description |
 |---|---|
-| `hedgedoc_create_note` | Create a new note (optionally with a custom URL alias). Returns the note ID and URL. |
+| `hedgedoc_create_note` | Create a note, optionally with an alias and explicit HedgeDoc permission. Omission preserves the server default. |
+| `hedgedoc_set_permission` | Change and verify a note's persisted permission (owner only). |
 | `hedgedoc_read_note` | Fetch a note's raw markdown content by ID or alias. |
 | `hedgedoc_update_note` | Overwrite an existing note's content (alias-based notes only — see [Limitations](docs/LIMITATIONS.md)). |
 | `hedgedoc_note_info` | Get a note's title, description, view count, and timestamps. |
@@ -158,8 +159,11 @@ from hedgedoc_mcp.client import HedgeDocClient
 client = HedgeDocClient("https://md.example.com")
 client.login(email="you@example.com", password="your-password")
 
-result = client.create_note("# Research notes\n\nSome findings...")
+result = client.create_note("# Research notes\n\nSome findings...", permission="protected")
 print(result.url)
+
+# Or change an existing note. The caller must own it.
+client.set_permission(result.note_id, "private")
 
 content = client.read_note(result.note_id)
 info = client.note_info(result.note_id)
