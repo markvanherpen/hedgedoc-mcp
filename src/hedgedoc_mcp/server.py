@@ -24,7 +24,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .auth import Config, ConfigError, build_client
-from .client import HedgeDocError, SessionExpiredError
+from .client import HedgeDocError, PermissionChangeError, SessionExpiredError
 
 server = Server("hedgedoc-mcp")
 
@@ -82,8 +82,51 @@ async def list_tools() -> list[Tool]:
                             "Requires FreeURL mode on the server."
                         ),
                     },
+                    "permission": {
+                        "type": "string",
+                        "enum": [
+                            "freely",
+                            "editable",
+                            "limited",
+                            "locked",
+                            "protected",
+                            "private",
+                        ],
+                        "description": (
+                            "Optional HedgeDoc permission. If omitted, the server default is used. "
+                            "Use 'private' for owner-only access, 'protected' for authenticated "
+                            "readers with owner-only editing, or 'limited' for authenticated "
+                            "editing."
+                        ),
+                    },
                 },
                 "required": ["content"],
+            },
+        ),
+        Tool(
+            name="hedgedoc_set_permission",
+            description=(
+                "Change a note's real HedgeDoc permission. Only the note owner can do this. "
+                "Success requires HedgeDoc's post-database-update permission broadcast and "
+                "a matching subsequently requested realtime refresh."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "note_id": {"type": "string", "description": "Note ID or alias."},
+                    "permission": {
+                        "type": "string",
+                        "enum": [
+                            "freely",
+                            "editable",
+                            "limited",
+                            "locked",
+                            "protected",
+                            "private",
+                        ],
+                    },
+                },
+                "required": ["note_id", "permission"],
             },
         ),
         Tool(
@@ -195,16 +238,41 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             client = _get_client()
             result = await asyncio.to_thread(_dispatch, client, name, arguments)
             return [TextContent(type="text", text=result)]
+        except PermissionChangeError as e:
+            return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
         except (HedgeDocError, ConfigError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]
+    except PermissionChangeError as e:
+        return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
     except (HedgeDocError, ConfigError, RuntimeError) as e:
         return [TextContent(type="text", text=f"Error: {e}")]
 
 
 def _dispatch(client, name: str, arguments: dict) -> str:
     if name == "hedgedoc_create_note":
-        result = client.create_note(arguments["content"], arguments.get("alias"))
-        return json.dumps({"note_id": result.note_id, "url": result.url}, indent=2)
+        result = client.create_note(
+            arguments["content"], arguments.get("alias"), arguments.get("permission")
+        )
+        return json.dumps(
+            {
+                "note_id": result.note_id,
+                "url": result.url,
+                "permission": result.permission,
+                "permission_verified": result.permission_verified,
+            },
+            indent=2,
+        )
+
+    if name == "hedgedoc_set_permission":
+        permission = client.set_permission(arguments["note_id"], arguments["permission"])
+        return json.dumps(
+            {
+                "note_id": arguments["note_id"],
+                "permission": permission,
+                "permission_verified": True,
+            },
+            indent=2,
+        )
 
     if name == "hedgedoc_read_note":
         content = client.read_note(arguments["note_id"])

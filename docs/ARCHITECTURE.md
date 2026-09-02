@@ -5,7 +5,7 @@ This project has three layers, each independently usable:
 ```
 ┌─────────────────────────────────────────────┐
 │  MCP layer (server.py)                       │
-│  6 tools exposed via stdio JSON-RPC           │
+│  7 tools exposed via stdio JSON-RPC           │
 │  Used by: Claude Code, Codex, Hermes, etc.    │
 └───────────────────┬───────────────────────────┘
                      │
@@ -16,11 +16,16 @@ This project has three layers, each independently usable:
 └────────────────────┬───────────────────────────┘
                      │
 ┌────────────────────▼───────────────────────────┐
-│  HTTP client layer (client.py)                   │
-│  Plain requests.Session wrapper around            │
-│  HedgeDoc's real (undocumented-as-REST) endpoints │
-│  Zero MCP/env dependencies -- usable standalone   │
+│  Client layer (client.py)                        │
+│  HTTP endpoints plus permission orchestration    │
+│  Zero MCP/env dependencies -- usable standalone  │
 └─────────────────────────────────────────────────┘
+                     │
+┌────────────────────▼───────────────────────────┐
+│  Realtime transport (realtime.py)              │
+│  Authenticated Socket.IO note join, refresh,   │
+│  metadata events, errors, and lifecycle         │
+└────────────────────────────────────────────────┘
 ```
 
 ## Why three layers, not one file
@@ -38,12 +43,21 @@ This project has three layers, each independently usable:
   `SessionExpiredError` handling automatic instead of something every
   caller has to reimplement.
 
-- **`server.py` is a thin MCP adapter.** It translates 6 tool calls into
+- **`server.py` is a thin MCP adapter.** It translates 7 tool calls into
   `client.py` method calls and formats results as `TextContent`. It
   contains exactly one piece of "real" logic: catching
   `SessionExpiredError` and retrying once after forcing a fresh
   `build_client()` call, so a single expired-cookie hiccup during a long
   agent session self-heals instead of failing the tool call outright.
+
+- **`realtime.py` owns note-scoped Socket.IO infrastructure.** It reuses
+  the HTTP cookie jar, joins by note ID, captures initial and requested
+  refresh state, handles realtime errors and timeouts, and guarantees
+  cleanup. Permission mutation uses this transport without implementing
+  or abstracting HedgeDoc's Operational Transform protocol. A future OT
+  client can reuse the authenticated connection and lifecycle while adding
+  document revisions, operations, transforms, resynchronization, and
+  authorship handling separately.
 
 ## Authentication flow in detail
 
@@ -110,8 +124,8 @@ interface — contributions welcome (see [CONTRIBUTING.md](../CONTRIBUTING.md)).
 
 ## Testing strategy
 
-All 25 tests in `tests/` mock `requests.Session` methods directly (no
-`responses`/`httpretty` library, no live server) so the suite runs in
+All tests in `tests/` mock HTTP or Socket.IO boundaries directly (no
+live server) so the suite runs in
 under a second with zero external dependencies. This was a deliberate
 choice to keep CI fast and to make the auth fallback logic
 (`build_client`'s cookie→login flow) easy to test in isolation —
@@ -119,8 +133,8 @@ see `tests/test_auth.py` for the four `build_client` scenarios (valid
 cookie, expired cookie + fallback, expired cookie + no fallback, no
 cookie at all).
 
-Live end-to-end verification (this project's server actually creating,
-reading, and updating notes on a real HedgeDoc instance, including a full
+Live end-to-end verification (this project's server actually creating and
+reading notes on a real HedgeDoc instance, including a full
 MCP stdio JSON-RPC handshake) was performed manually during development
 against a live instance rather than committed as a test, since it requires
 real credentials. If you're contributing and want to add an opt-in

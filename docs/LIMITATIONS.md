@@ -42,6 +42,29 @@ updated through HedgeDoc 1.x's HTTP surface. They can be edited in the
 browser, which uses the Socket.IO collaborative-editing protocol; supporting
 that protocol is outside this HTTP client's current scope.
 
+## Note permissions use Socket.IO
+
+`POST /new` and `POST /new/{alias}` do not accept a permission parameter.
+HedgeDoc persists permission in the note record and lets only the owner change
+it through the editor's Socket.IO channel. This metadata event is separate from
+the Operational Transform protocol used for note text.
+
+`hedgedoc_create_note` therefore leaves the server default untouched when its
+optional `permission` argument is omitted. When supplied, it creates the note
+and then applies the permission through Socket.IO. `hedgedoc_set_permission`
+does the same for an existing note. Success requires both HedgeDoc's matching
+room-wide event, which is emitted after its database-update promise resolves,
+and a subsequently requested `refresh` reporting the same permission. The
+refresh reflects HedgeDoc's realtime state and may be backed by its in-memory
+note cache; it is not described as an independent database read.
+
+HedgeDoc 1.11.1 supports `freely`, `editable`, `limited`, `locked`, `protected`,
+and `private`. In particular, `protected` allows signed-in users to read while
+only the owner may edit; anonymous users cannot read it. Permission creation and
+mutation are separate server operations. If the latter fails, a newly created
+note still exists at its returned URL. The client reports that partial outcome
+without claiming the requested permission was applied.
+
 ## No delete endpoint
 
 There is no `DELETE /{note}` (or equivalent) anywhere in the HedgeDoc 1.x
@@ -83,6 +106,7 @@ expires.
 |---|---|---|
 | Create note (random ID) | ✅ | `hedgedoc_create_note` |
 | Create note (custom alias) | ✅* | Requires `CMD_ALLOW_FREEURL=true` on the server |
+| Change note permission | ✅ | Owner-only Socket.IO metadata event; persistence is verified |
 | Read note content | ✅ | Public endpoint, no auth needed |
 | Update note (alias-based) | ❌ | `POST /new/{alias}` returns 409 when it already exists |
 | Update note (random-ID) | ❌ | Not possible over HTTP in HedgeDoc 1.x |

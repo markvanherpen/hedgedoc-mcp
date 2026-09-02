@@ -25,6 +25,14 @@ from urllib.parse import quote, unquote
 
 import requests
 
+from .realtime import (
+    HedgeDocRealtimeSession,
+    RealtimeAuthenticationError,
+    RealtimeError,
+)
+
+PERMISSION_VALUES = frozenset({"freely", "editable", "limited", "locked", "protected", "private"})
+
 DEFAULT_SESSION_COOKIE_NAME = "connect.sid"
 _COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
 
@@ -48,6 +56,31 @@ def validate_session_cookie_name(cookie_name: str) -> str:
     return cookie_name
 
 
+class PermissionChangeError(HedgeDocError):
+    """Raised when a note exists but its requested permission was not applied."""
+
+    def __init__(
+        self,
+        message: str,
+        note: NoteResult | None = None,
+        requested_permission: str | None = None,
+    ):
+        super().__init__(message)
+        self.note = note
+        self.requested_permission = requested_permission
+
+    def recovery_details(self) -> dict:
+        """Return machine-readable details after a create-then-mutate failure."""
+        return {
+            "created": self.note is not None,
+            "note_id": self.note.note_id if self.note else None,
+            "url": self.note.url if self.note else None,
+            "requested_permission": self.requested_permission,
+            "permission_verified": False,
+            "error": str(self),
+        }
+
+
 @dataclass
 class NoteInfo:
     title: str
@@ -61,6 +94,16 @@ class NoteInfo:
 class NoteResult:
     note_id: str
     url: str
+    permission: str | None = None
+    permission_verified: bool = False
+
+
+def validate_permission(permission: str) -> str:
+    """Return a valid HedgeDoc 1.11.1 permission value."""
+    if permission not in PERMISSION_VALUES:
+        allowed = ", ".join(sorted(PERMISSION_VALUES))
+        raise HedgeDocError(f"Invalid permission '{permission}'. Allowed values: {allowed}.")
+    return permission
 
 
 class HedgeDocClient:
@@ -143,12 +186,17 @@ class HedgeDocClient:
 
     # -- Notes ------------------------------------------------------------
 
-    def create_note(self, content: str, alias: str | None = None) -> NoteResult:
+    def create_note(
+        self, content: str, alias: str | None = None, permission: str | None = None
+    ) -> NoteResult:
         """Create a new note. Returns its ID and full URL.
 
         If the instance requires login for note creation (the common case)
         and the session is invalid, raises SessionExpiredError.
         """
+        if permission is not None:
+            validate_permission(permission)
+
         path = f"/new/{alias}" if alias else "/new"
         resp = self._session.post(
             f"{self.base_url}{path}",
@@ -170,7 +218,46 @@ class HedgeDocClient:
 
         note_url = location if location.startswith("http") else f"{self.base_url}{location}"
         note_id = note_url.rstrip("/").rsplit("/", 1)[-1]
-        return NoteResult(note_id=note_id, url=note_url)
+        result = NoteResult(note_id=note_id, url=note_url)
+        if permission is not None:
+            try:
+                self.set_permission(note_id, permission)
+            except HedgeDocError as exc:
+                raise PermissionChangeError(
+                    f"Note was created at {note_url}, but permission '{permission}' "
+                    f"was not confirmed. The note may still have its server-default "
+                    f"permission; inspect it before sharing. {exc}",
+                    note=result,
+                    requested_permission=permission,
+                ) from exc
+            result.permission = permission
+            result.permission_verified = True
+        return result
+
+    def set_permission(self, note_id: str, permission: str) -> str:
+        """Set and persist a note permission through HedgeDoc's realtime channel.
+
+        Success means HedgeDoc emitted its post-database-update room broadcast
+        and a subsequently requested refresh reported the requested value.
+        """
+        validate_permission(permission)
+        try:
+            with HedgeDocRealtimeSession(
+                base_url=self.base_url,
+                note_id=note_id,
+                http_session=self._session,
+                session_cookie_name=self.session_cookie_name,
+                timeout=self.timeout,
+            ) as realtime:
+                realtime.set_permission(permission)
+        except RealtimeAuthenticationError as exc:
+            raise SessionExpiredError(str(exc)) from exc
+        except RealtimeError as exc:
+            raise PermissionChangeError(
+                f"HedgeDoc did not confirm permission '{permission}' for note '{note_id}': {exc}",
+                requested_permission=permission,
+            ) from exc
+        return permission
 
     def read_note(self, note_id: str) -> str:
         """Fetch the raw markdown content of a note. Public endpoint, no auth needed."""

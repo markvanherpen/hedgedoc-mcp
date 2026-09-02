@@ -8,6 +8,7 @@ import requests
 from hedgedoc_mcp.client import (
     HedgeDocClient,
     HedgeDocError,
+    PermissionChangeError,
     SessionExpiredError,
 )
 
@@ -192,6 +193,106 @@ def test_update_note_is_unsupported_without_making_an_http_request(client, mocke
         client.update_note("my-alias", "# Replacement")
 
     post.assert_not_called()
+
+
+def test_create_note_without_permission_preserves_server_default(client, mocker):
+    mocker.patch.object(
+        client._session,
+        "post",
+        return_value=_FakeResponse(status_code=302, headers={"Location": "/abc"}),
+    )
+    set_permission = mocker.patch.object(client, "set_permission")
+
+    result = client.create_note("# Hello")
+
+    set_permission.assert_not_called()
+    assert result.permission is None
+    assert result.permission_verified is False
+
+
+def test_create_note_with_permission_applies_it(client, mocker):
+    mocker.patch.object(
+        client._session,
+        "post",
+        return_value=_FakeResponse(status_code=302, headers={"Location": "/abc"}),
+    )
+    set_permission = mocker.patch.object(client, "set_permission", return_value="protected")
+
+    result = client.create_note("# Handoff", permission="protected")
+
+    assert result.note_id == "abc"
+    assert result.permission == "protected"
+    assert result.permission_verified is True
+    set_permission.assert_called_once_with("abc", "protected")
+
+
+def test_create_alias_note_with_permission_applies_it(client, mocker):
+    post = mocker.patch.object(
+        client._session,
+        "post",
+        return_value=_FakeResponse(status_code=302, headers={"Location": "/handoff"}),
+    )
+    set_permission = mocker.patch.object(client, "set_permission", return_value="protected")
+
+    result = client.create_note("# Handoff", alias="handoff", permission="protected")
+
+    assert post.call_args.args[0] == "https://md.example.com/new/handoff"
+    assert result.note_id == "handoff"
+    assert result.permission_verified is True
+    set_permission.assert_called_once_with("handoff", "protected")
+
+
+def test_create_note_rejects_invalid_permission_before_creation(client, mocker):
+    post = mocker.patch.object(client._session, "post")
+
+    with pytest.raises(HedgeDocError, match="Invalid permission 'public'"):
+        client.create_note("# Handoff", permission="public")
+
+    post.assert_not_called()
+
+
+def test_create_note_reports_url_when_permission_change_fails(client, mocker):
+    mocker.patch.object(
+        client._session,
+        "post",
+        return_value=_FakeResponse(status_code=302, headers={"Location": "/abc"}),
+    )
+    mocker.patch.object(client, "set_permission", side_effect=HedgeDocError("denied"))
+
+    with pytest.raises(
+        PermissionChangeError, match=r"created at https://md.example.com/abc"
+    ) as raised:
+        client.create_note("# Handoff", permission="protected")
+
+    assert raised.value.recovery_details() == {
+        "created": True,
+        "note_id": "abc",
+        "url": "https://md.example.com/abc",
+        "requested_permission": "protected",
+        "permission_verified": False,
+        "error": str(raised.value),
+    }
+
+
+@pytest.mark.parametrize(
+    "permission", ["freely", "editable", "limited", "locked", "protected", "private"]
+)
+def test_set_permission_accepts_hedgedoc_values(client, mocker, permission):
+    realtime_class = mocker.patch("hedgedoc_mcp.client.HedgeDocRealtimeSession")
+
+    assert client.set_permission("abc", permission) == permission
+    realtime_class.return_value.__enter__.return_value.set_permission.assert_called_once_with(
+        permission
+    )
+
+
+def test_set_permission_rejects_invalid_value_without_connecting(client, mocker):
+    realtime_class = mocker.patch("hedgedoc_mcp.client.HedgeDocRealtimeSession")
+
+    with pytest.raises(HedgeDocError, match="Invalid permission"):
+        client.set_permission("abc", "public")
+
+    realtime_class.assert_not_called()
 
 
 def test_read_note_success(client, mocker):
