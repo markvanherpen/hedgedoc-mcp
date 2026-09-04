@@ -1,6 +1,6 @@
 # Architecture
 
-This project has three layers, each independently usable:
+This project has four layers, with the client and transport independently usable:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -28,7 +28,7 @@ This project has three layers, each independently usable:
 └────────────────────────────────────────────────┘
 ```
 
-## Why three layers, not one file
+## Why separate layers, not one file
 
 - **`client.py` has zero MCP dependencies.** You can `pip install
   hedgedoc-mcp` and use `HedgeDocClient` directly in a script, a cron job,

@@ -65,6 +65,10 @@ mutation are separate server operations. If the latter fails, a newly created
 note still exists at its returned URL. The client reports that partial outcome
 without claiming the requested permission was applied.
 
+Live HedgeDoc 1.11.1 acceptance testing verified protected-note handoff in both
+directions between distinct authenticated owners/readers, while anonymous access
+did not expose protected content.
+
 ## No delete endpoint
 
 There is no `DELETE /{note}` (or equivalent) anywhere in the HedgeDoc 1.x
@@ -106,7 +110,7 @@ expires.
 |---|---|---|
 | Create note (random ID) | ✅ | `hedgedoc_create_note` |
 | Create note (custom alias) | ✅* | Requires `CMD_ALLOW_FREEURL=true` on the server |
-| Change note permission | ✅ | Owner-only Socket.IO metadata event; persistence is verified |
+| Change note permission | ✅ | Owner-only Socket.IO metadata event; matching broadcast and refresh are verified |
 | Read note content | ✅ | Public endpoint, no auth needed |
 | Update note (alias-based) | ❌ | `POST /new/{alias}` returns 409 when it already exists |
 | Update note (random-ID) | ❌ | Not possible over HTTP in HedgeDoc 1.x |

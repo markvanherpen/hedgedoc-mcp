@@ -2,6 +2,7 @@
 
 Exposes:
     hedgedoc_create_note   -- create a new note, returns its URL
+    hedgedoc_set_permission -- change an owned note's permission
     hedgedoc_read_note     -- fetch a note's raw markdown
     hedgedoc_update_note   -- reports that HTTP updates are unsupported
     hedgedoc_note_info     -- title, timestamps, viewcount for a note
@@ -55,8 +56,8 @@ async def list_tools() -> list[Tool]:
             name="hedgedoc_create_note",
             description=(
                 "Create a new note on the HedgeDoc instance. "
-                "Returns JSON with two fields: 'note_id' (the unique identifier / URL slug) "
-                "and 'url' (the full URL where the note can be viewed or shared). "
+                "Returns JSON with the note ID, URL, requested permission, and whether that "
+                "permission was verified. "
                 "Use `alias` to assign a human-readable slug such as 'q3-research-notes'. "
                 "HedgeDoc 1.x does not support updating either aliases or random-ID notes "
                 "over HTTP. "
