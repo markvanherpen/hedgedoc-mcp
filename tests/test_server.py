@@ -51,6 +51,41 @@ def test_update_tool_returns_verified_result(mocker):
     assert result["revision_after"] == 3
 
 
+def test_update_tool_forwards_optional_content_fingerprint(mocker):
+    client = mocker.Mock()
+    client.update_note.return_value = _update_result()
+    fingerprint = "a" * 64
+
+    server._dispatch(
+        client,
+        "hedgedoc_update_note",
+        {
+            "note_id": "existing-alias",
+            "content": "# Replacement",
+            "expected_content_sha256": fingerprint,
+        },
+    )
+
+    client.update_note.assert_called_once_with(
+        "existing-alias", "# Replacement", expected_content_sha256=fingerprint
+    )
+
+
+def test_fingerprint_read_tool_returns_content_and_fingerprint(mocker):
+    client = mocker.Mock()
+    client.read_note_with_fingerprint.return_value.as_dict.return_value = {
+        "content": "# Existing",
+        "content_sha256": "a" * 64,
+    }
+
+    result = json.loads(
+        server._dispatch(client, "hedgedoc_read_note_with_fingerprint", {"note_id": "abc"})
+    )
+
+    assert result == {"content": "# Existing", "content_sha256": "a" * 64}
+    client.read_note.assert_not_called()
+
+
 def test_update_tool_description_documents_bounded_conflict_behavior():
     tools = asyncio.run(server.list_tools())
     update_tool = next(tool for tool in tools if tool.name == "hedgedoc_update_note")
@@ -59,6 +94,17 @@ def test_update_tool_description_documents_bounded_conflict_behavior():
     assert "structured conflict" in update_tool.description
     assert "re-read the note" in update_tool.description
     assert "never retries" in update_tool.description
+    assert "expected_content_sha256" in update_tool.description
+
+
+def test_fingerprint_read_tool_schema_documents_conditional_update():
+    tools = asyncio.run(server.list_tools())
+    read_tool = next(tool for tool in tools if tool.name == "hedgedoc_read_note_with_fingerprint")
+    update_tool = next(tool for tool in tools if tool.name == "hedgedoc_update_note")
+
+    assert "content_sha256" in read_tool.description
+    fingerprint_schema = update_tool.inputSchema["properties"]["expected_content_sha256"]
+    assert fingerprint_schema["pattern"] == "^[0-9a-f]{64}$"
 
 
 def test_update_failure_is_machine_readable(mocker):

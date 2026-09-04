@@ -39,6 +39,7 @@ PERMISSION_VALUES = frozenset({"freely", "editable", "limited", "locked", "prote
 
 DEFAULT_SESSION_COOKIE_NAME = "connect.sid"
 _COOKIE_NAME_RE = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+_CONTENT_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class HedgeDocError(RuntimeError):
@@ -102,6 +103,8 @@ class NoteUpdateResult:
     revision_after: int
     expected_content_sha256: str
     actual_content_sha256: str | None
+    expected_previous_content_sha256: str | None = None
+    condition_matched: bool | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -118,6 +121,8 @@ class NoteUpdateResult:
             "revision_after": self.revision_after,
             "expected_content_sha256": self.expected_content_sha256,
             "actual_content_sha256": self.actual_content_sha256,
+            "expected_previous_content_sha256": self.expected_previous_content_sha256,
+            "condition_matched": self.condition_matched,
         }
 
 
@@ -135,6 +140,26 @@ class NoteUpdateError(HedgeDocError):
 def content_sha256(content: str) -> str:
     """Hash note content without exposing it in machine-readable failures."""
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def validate_content_sha256(fingerprint: str) -> str:
+    """Return a canonical content fingerprint, or raise ``HedgeDocError``."""
+    if not isinstance(fingerprint, str) or not _CONTENT_SHA256_RE.fullmatch(fingerprint):
+        raise HedgeDocError(
+            "Content fingerprint must be a lowercase 64-character SHA-256 hex digest."
+        )
+    return fingerprint
+
+
+@dataclass(frozen=True)
+class NoteReadResult:
+    """Raw note content together with its stable content fingerprint."""
+
+    content: str
+    content_sha256: str
+
+    def as_dict(self) -> dict:
+        return {"content": self.content, "content_sha256": self.content_sha256}
 
 
 @dataclass
@@ -323,13 +348,31 @@ class HedgeDocClient:
         resp.raise_for_status()
         return resp.text
 
-    def update_note(self, note_id: str, content: str) -> NoteUpdateResult:
+    def read_note_with_fingerprint(self, note_id: str) -> NoteReadResult:
+        """Fetch a note and a SHA-256 fingerprint suitable for a conditional update.
+
+        ``read_note()`` intentionally remains a string-returning API for existing callers.
+        """
+        content = self.read_note(note_id)
+        return NoteReadResult(content=content, content_sha256=content_sha256(content))
+
+    def update_note(
+        self,
+        note_id: str,
+        content: str,
+        *,
+        expected_content_sha256: str | None = None,
+    ) -> NoteUpdateResult:
         """Replace one existing note through a bounded HedgeDoc OT operation.
 
         Success requires an acknowledgement, no observed concurrent operation,
         HedgeDoc's post-update ``check``, and exact HTTP content read-back.
+        When ``expected_content_sha256`` is supplied, the live realtime document
+        must match it before an operation is submitted.
         """
-        expected_hash = content_sha256(content)
+        if expected_content_sha256 is not None:
+            expected_content_sha256 = validate_content_sha256(expected_content_sha256)
+        replacement_hash = content_sha256(content)
         realtime: HedgeDocRealtimeSession | None = None
         try:
             with HedgeDocRealtimeSession(
@@ -341,13 +384,29 @@ class HedgeDocClient:
             ) as realtime:
                 revision = realtime.revision
                 current = realtime.document
+                current_hash = content_sha256(current)
+                if expected_content_sha256 is not None and current_hash != expected_content_sha256:
+                    result = self._update_result(
+                        note_id,
+                        replacement_hash,
+                        current_hash,
+                        revision,
+                        revision,
+                        expected_previous_content_sha256=expected_content_sha256,
+                        condition_matched=False,
+                    )
+                    raise NoteUpdateError(
+                        "Note content fingerprint did not match the current document; "
+                        "no update was submitted.",
+                        result,
+                    )
                 if current == content:
                     actual = self.read_note(note_id)
                     actual_hash = content_sha256(actual)
                     if actual != content:
                         result = self._update_result(
                             note_id,
-                            expected_hash,
+                            replacement_hash,
                             actual_hash,
                             revision,
                             revision,
@@ -359,7 +418,7 @@ class HedgeDocClient:
                         )
                     return self._update_result(
                         note_id,
-                        expected_hash,
+                        replacement_hash,
                         actual_hash,
                         revision,
                         revision,
@@ -375,7 +434,7 @@ class HedgeDocClient:
                 if content_length > maximum and content_length > utf16_length(current):
                     result = self._update_result(
                         note_id,
-                        expected_hash,
+                        replacement_hash,
                         content_sha256(current),
                         revision,
                         revision,
@@ -392,7 +451,7 @@ class HedgeDocClient:
                     content_verified = actual == content
                     result = self._result_from_protocol(
                         note_id,
-                        expected_hash,
+                        replacement_hash,
                         actual,
                         exc.result,
                         content_verified=content_verified,
@@ -405,7 +464,7 @@ class HedgeDocClient:
                     content_verified = actual == content
                     result = self._result_from_protocol(
                         note_id,
-                        expected_hash,
+                        replacement_hash,
                         actual,
                         progress,
                         content_verified=content_verified,
@@ -418,7 +477,7 @@ class HedgeDocClient:
                 content_verified = actual == content
                 result = self._result_from_protocol(
                     note_id,
-                    expected_hash,
+                    replacement_hash,
                     actual,
                     protocol_result,
                     updated=content_verified,
@@ -443,7 +502,7 @@ class HedgeDocClient:
             )
             result = self._update_result(
                 note_id,
-                expected_hash,
+                replacement_hash,
                 current_hash,
                 revision,
                 revision,
@@ -466,6 +525,8 @@ class HedgeDocClient:
         check_received: bool = False,
         content_verified: bool = False,
         persistence_verified: bool = False,
+        expected_previous_content_sha256: str | None = None,
+        condition_matched: bool | None = None,
     ) -> NoteUpdateResult:
         return NoteUpdateResult(
             note_id=note_id,
@@ -481,6 +542,8 @@ class HedgeDocClient:
             revision_after=revision_after,
             expected_content_sha256=expected_hash,
             actual_content_sha256=actual_hash,
+            expected_previous_content_sha256=expected_previous_content_sha256,
+            condition_matched=condition_matched,
         )
 
     def _result_from_protocol(

@@ -220,6 +220,57 @@ def test_update_note_replaces_and_verifies_content(client, mocker):
     assert result.revision_after == 5
 
 
+def test_read_note_with_fingerprint_preserves_string_read_contract(client, mocker):
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="# Content"))
+
+    assert client.read_note("abc") == "# Content"
+    read_result = client.read_note_with_fingerprint("abc")
+
+    assert read_result.content == "# Content"
+    assert read_result.content_sha256 == content_sha256("# Content")
+
+
+def test_update_note_refuses_stale_content_fingerprint_before_submission(client, mocker):
+    realtime, _class = _mock_realtime(mocker, document="newer", revision=8)
+
+    with pytest.raises(NoteUpdateError, match="fingerprint did not match") as raised:
+        client.update_note(
+            "abc",
+            "replacement",
+            expected_content_sha256=content_sha256("older"),
+        )
+
+    realtime.replace_document.assert_not_called()
+    details = raised.value.recovery_details()
+    assert details["operation_submitted"] is False
+    assert details["expected_previous_content_sha256"] == content_sha256("older")
+    assert details["actual_content_sha256"] == content_sha256("newer")
+    assert details["condition_matched"] is False
+
+
+def test_update_note_rejects_invalid_content_fingerprint_before_connecting(client, mocker):
+    realtime_class = mocker.patch("hedgedoc_mcp.client.HedgeDocRealtimeSession")
+
+    with pytest.raises(HedgeDocError, match="64-character"):
+        client.update_note("abc", "replacement", expected_content_sha256="not-a-fingerprint")
+
+    realtime_class.assert_not_called()
+
+
+def test_update_note_allows_matching_content_fingerprint(client, mocker):
+    realtime, _class = _mock_realtime(mocker, document="current")
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="replacement"))
+
+    result = client.update_note(
+        "abc",
+        "replacement",
+        expected_content_sha256=content_sha256("current"),
+    )
+
+    realtime.replace_document.assert_called_once_with("replacement")
+    assert result.updated is True
+
+
 @pytest.mark.parametrize(("current", "replacement"), [("", "B"), ("A", "")])
 def test_update_note_handles_empty_documents(client, mocker, current, replacement):
     realtime, _class = _mock_realtime(mocker, document=current)

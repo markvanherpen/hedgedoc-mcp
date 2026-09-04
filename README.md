@@ -16,7 +16,7 @@ This project does the unglamorous work of handling that correctly — login, coo
 
 - 🔐 **Handles HedgeDoc 1.x's real auth model** (session cookies, not tokens)
 - 🔁 **Auto re-login on session expiry** — no manual cookie refresh needed
-- 🛠️ **7 MCP tools**: create, permission management, read, bounded update, info, whoami, history
+- 🛠️ **8 MCP tools**: create, permission management, read, conditional read/update, info, whoami, history
 - 🐍 **Standalone Python client** (`hedgedoc_mcp.client.HedgeDocClient`) usable outside MCP too
 - ✅ **Fully tested** — mocked HTTP, no live server required to run the test suite
 - 📦 **Works with any MCP client**: Claude Code, Codex, Hermes, Cursor, custom clients
@@ -147,7 +147,8 @@ This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or
 | `hedgedoc_create_note` | Create a note, optionally with an alias and explicit HedgeDoc permission. Omission preserves the server default. |
 | `hedgedoc_set_permission` | Change a note's permission and confirm it through HedgeDoc's post-update broadcast and refreshed realtime state (owner only). |
 | `hedgedoc_read_note` | Fetch a note's raw markdown content by ID or alias. |
-| `hedgedoc_update_note` | Replace an existing note with one bounded Socket.IO/OT operation and verify persisted content. |
+| `hedgedoc_read_note_with_fingerprint` | Fetch raw markdown plus a SHA-256 fingerprint for a conditional update. |
+| `hedgedoc_update_note` | Replace an existing note with one bounded Socket.IO/OT operation and verify persisted content. Optionally require the fingerprint returned by the conditional read tool. |
 | `hedgedoc_note_info` | Get a note's title, description, view count, and timestamps. |
 | `hedgedoc_whoami` | Verify the session is valid and show the logged-in user. |
 | `hedgedoc_list_history` | List the logged-in user's recently viewed/pinned notes. |
@@ -172,6 +173,23 @@ client.update_note(result.note_id, "# Revised research notes")
 content = client.read_note(result.note_id)
 info = client.note_info(result.note_id)
 ```
+
+### Conditional updates
+
+For a read–modify–write flow, use the fingerprint-aware read method and pass its
+fingerprint back to `update_note`. The update is refused before it submits an OT
+operation if the live realtime document changed after the read.
+
+```python
+read_result = client.read_note_with_fingerprint(result.note_id)
+client.update_note(
+    result.note_id,
+    read_result.content + "\n\n## Follow-up",
+    expected_content_sha256=read_result.content_sha256,
+)
+```
+
+`read_note(note_id) -> str` remains unchanged for existing Python callers.
 
 ## Known limitations
 

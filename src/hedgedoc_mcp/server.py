@@ -4,6 +4,7 @@ Exposes:
     hedgedoc_create_note   -- create a new note, returns its URL
     hedgedoc_set_permission -- change an owned note's permission
     hedgedoc_read_note     -- fetch a note's raw markdown
+    hedgedoc_read_note_with_fingerprint -- fetch markdown and a conditional-update fingerprint
     hedgedoc_update_note   -- bounded one-shot replacement through HedgeDoc OT
     hedgedoc_note_info     -- title, timestamps, viewcount for a note
     hedgedoc_whoami        -- verify the current session / show logged-in user
@@ -159,7 +160,10 @@ async def list_tools() -> list[Tool]:
                 "1.11.1 Socket.IO/OT operation. Success means the final content matched exactly "
                 "through HedgeDoc's normal HTTP read path. Concurrent editing can return a "
                 "structured conflict after a transformed or partial mutation; re-read the note "
-                "before deciding what to do next. This tool never retries to overwrite a conflict."
+                "before deciding what to do next. This tool never retries to overwrite a conflict. "
+                "Optionally supply `expected_content_sha256` from "
+                "`hedgedoc_read_note_with_fingerprint` to refuse an update if the document "
+                "changed after it was read."
             ),
             inputSchema={
                 "type": "object",
@@ -172,8 +176,35 @@ async def list_tools() -> list[Tool]:
                         "type": "string",
                         "description": "Complete replacement markdown content.",
                     },
+                    "expected_content_sha256": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$",
+                        "description": (
+                            "Optional SHA-256 fingerprint of the previously read complete "
+                            "content. If it does not match the live document, no update is "
+                            "submitted."
+                        ),
+                    },
                 },
                 "required": ["note_id", "content"],
+            },
+        ),
+        Tool(
+            name="hedgedoc_read_note_with_fingerprint",
+            description=(
+                "Fetch raw markdown together with its SHA-256 content fingerprint. Use the "
+                "returned `content_sha256` as `expected_content_sha256` in "
+                "`hedgedoc_update_note` for a conditional replacement."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "note_id": {
+                        "type": "string",
+                        "description": "The note ID or custom alias.",
+                    },
+                },
+                "required": ["note_id"],
             },
         ),
         Tool(
@@ -278,8 +309,16 @@ def _dispatch(client, name: str, arguments: dict) -> str:
         content = client.read_note(arguments["note_id"])
         return content
 
+    if name == "hedgedoc_read_note_with_fingerprint":
+        result = client.read_note_with_fingerprint(arguments["note_id"])
+        return json.dumps(result.as_dict(), indent=2)
+
     if name == "hedgedoc_update_note":
-        result = client.update_note(arguments["note_id"], arguments["content"])
+        result = client.update_note(
+            arguments["note_id"],
+            arguments["content"],
+            expected_content_sha256=arguments.get("expected_content_sha256"),
+        )
         return json.dumps(result.as_dict(), indent=2)
 
     if name == "hedgedoc_note_info":
