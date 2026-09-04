@@ -6,12 +6,67 @@ import asyncio
 import json
 
 from hedgedoc_mcp import server
-from hedgedoc_mcp.client import HedgeDocError, NoteResult, PermissionChangeError
+from hedgedoc_mcp.client import (
+    NoteResult,
+    NoteUpdateError,
+    NoteUpdateResult,
+    PermissionChangeError,
+)
 
 
-def test_update_tool_reports_unsupported_operation(mocker):
+def _update_result(**overrides):
+    values = {
+        "note_id": "existing-alias",
+        "updated": True,
+        "no_op": False,
+        "operation_submitted": True,
+        "operation_acknowledged": True,
+        "concurrency_detected": False,
+        "check_received": True,
+        "content_verified": True,
+        "persistence_verified": True,
+        "revision_before": 2,
+        "revision_after": 3,
+        "expected_content_sha256": "expected",
+        "actual_content_sha256": "actual",
+    }
+    values.update(overrides)
+    return NoteUpdateResult(**values)
+
+
+def test_update_tool_returns_verified_result(mocker):
     client = mocker.Mock()
-    client.update_note.side_effect = HedgeDocError("Updating notes is unsupported")
+    client.update_note.return_value = _update_result()
+
+    result = json.loads(
+        server._dispatch(
+            client,
+            "hedgedoc_update_note",
+            {"note_id": "existing-alias", "content": "# Replacement"},
+        )
+    )
+
+    assert result["updated"] is True
+    assert result["content_verified"] is True
+    assert result["revision_after"] == 3
+
+
+def test_update_tool_description_documents_bounded_conflict_behavior():
+    tools = asyncio.run(server.list_tools())
+    update_tool = next(tool for tool in tools if tool.name == "hedgedoc_update_note")
+
+    assert "bounded" in update_tool.description
+    assert "structured conflict" in update_tool.description
+    assert "re-read the note" in update_tool.description
+    assert "never retries" in update_tool.description
+
+
+def test_update_failure_is_machine_readable(mocker):
+    client = mocker.Mock()
+    client.update_note.side_effect = NoteUpdateError(
+        "Concurrent editing was detected; the operation may already be applied.",
+        _update_result(updated=False, concurrency_detected=True, content_verified=False),
+    )
     mocker.patch("hedgedoc_mcp.server._get_client", return_value=client)
 
     async def run_synchronously(function, *args):
@@ -19,21 +74,17 @@ def test_update_tool_reports_unsupported_operation(mocker):
 
     mocker.patch("hedgedoc_mcp.server.asyncio.to_thread", side_effect=run_synchronously)
 
-    result = asyncio.run(
+    response = asyncio.run(
         server.call_tool(
-            "hedgedoc_update_note", {"note_id": "existing-alias", "content": "# Replacement"}
+            "hedgedoc_update_note",
+            {"note_id": "existing-alias", "content": "# Replacement"},
         )
     )
+    result = json.loads(response[0].text)
 
-    assert result[0].text == "Error: Updating notes is unsupported"
-
-
-def test_update_tool_description_does_not_claim_it_updates_notes():
-    tools = asyncio.run(server.list_tools())
-    update_tool = next(tool for tool in tools if tool.name == "hedgedoc_update_note")
-
-    assert "Unsupported operation" in update_tool.description
-    assert "does not modify the note" in update_tool.description
+    assert result["updated"] is False
+    assert result["concurrency_detected"] is True
+    assert "may already be applied" in result["error"]
 
 
 def test_create_tool_returns_explicit_permission_verification(mocker):

@@ -2,8 +2,9 @@
 
 Exposes:
     hedgedoc_create_note   -- create a new note, returns its URL
+    hedgedoc_set_permission -- change an owned note's permission
     hedgedoc_read_note     -- fetch a note's raw markdown
-    hedgedoc_update_note   -- reports that HTTP updates are unsupported
+    hedgedoc_update_note   -- bounded one-shot replacement through HedgeDoc OT
     hedgedoc_note_info     -- title, timestamps, viewcount for a note
     hedgedoc_whoami        -- verify the current session / show logged-in user
     hedgedoc_list_history  -- recently viewed/pinned notes for the logged-in user
@@ -24,7 +25,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from .auth import Config, ConfigError, build_client
-from .client import HedgeDocError, PermissionChangeError, SessionExpiredError
+from .client import HedgeDocError, NoteUpdateError, PermissionChangeError, SessionExpiredError
 
 server = Server("hedgedoc-mcp")
 
@@ -55,8 +56,8 @@ async def list_tools() -> list[Tool]:
             name="hedgedoc_create_note",
             description=(
                 "Create a new note on the HedgeDoc instance. "
-                "Returns JSON with two fields: 'note_id' (the unique identifier / URL slug) "
-                "and 'url' (the full URL where the note can be viewed or shared). "
+                "Returns JSON with the note ID, URL, requested permission, and whether that "
+                "permission was verified. "
                 "Use `alias` to assign a human-readable slug such as 'q3-research-notes'. "
                 "HedgeDoc 1.x does not support updating either aliases or random-ID notes "
                 "over HTTP. "
@@ -154,27 +155,22 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="hedgedoc_update_note",
             description=(
-                "Unsupported operation. HedgeDoc 1.x has no HTTP endpoint to update note content. "
-                "Its browser editor uses a Socket.IO collaborative-editing protocol instead. "
-                "POST /new/{alias} does not overwrite an existing alias: it returns HTTP 409. "
-                "This tool returns a clear error and does not modify the note."
+                "Replace the complete content of an existing note through one bounded HedgeDoc "
+                "1.11.1 Socket.IO/OT operation. Success means the final content matched exactly "
+                "through HedgeDoc's normal HTTP read path. Concurrent editing can return a "
+                "structured conflict after a transformed or partial mutation; re-read the note "
+                "before deciding what to do next. This tool never retries to overwrite a conflict."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "note_id": {
                         "type": "string",
-                        "description": (
-                            "The note ID or alias. This is retained for API compatibility; "
-                            "the operation is unsupported."
-                        ),
+                        "description": "The existing note ID or alias.",
                     },
                     "content": {
                         "type": "string",
-                        "description": (
-                            "Requested markdown content. This is retained for API compatibility; "
-                            "the operation is unsupported."
-                        ),
+                        "description": "Complete replacement markdown content.",
                     },
                 },
                 "required": ["note_id", "content"],
@@ -240,9 +236,13 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=result)]
         except PermissionChangeError as e:
             return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
+        except NoteUpdateError as e:
+            return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
         except (HedgeDocError, ConfigError) as e:
             return [TextContent(type="text", text=f"Error: {e}")]
     except PermissionChangeError as e:
+        return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
+    except NoteUpdateError as e:
         return [TextContent(type="text", text=json.dumps(e.recovery_details(), indent=2))]
     except (HedgeDocError, ConfigError, RuntimeError) as e:
         return [TextContent(type="text", text=f"Error: {e}")]
@@ -279,8 +279,8 @@ def _dispatch(client, name: str, arguments: dict) -> str:
         return content
 
     if name == "hedgedoc_update_note":
-        client.update_note(arguments["note_id"], arguments["content"])
-        return f"Note '{arguments['note_id']}' updated."
+        result = client.update_note(arguments["note_id"], arguments["content"])
+        return json.dumps(result.as_dict(), indent=2)
 
     if name == "hedgedoc_note_info":
         info = client.note_info(arguments["note_id"])

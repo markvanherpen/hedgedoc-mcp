@@ -8,9 +8,12 @@ import requests
 from hedgedoc_mcp.client import (
     HedgeDocClient,
     HedgeDocError,
+    NoteUpdateError,
     PermissionChangeError,
     SessionExpiredError,
+    content_sha256,
 )
+from hedgedoc_mcp.realtime import RealtimeConflictError, RealtimeTimeoutError, RealtimeUpdateResult
 
 
 @pytest.fixture
@@ -186,13 +189,188 @@ def test_creating_existing_alias_conflicts_and_preserves_original_content(client
     assert client.read_note("existing-alias") == "# Original"
 
 
-def test_update_note_is_unsupported_without_making_an_http_request(client, mocker):
-    post = mocker.patch.object(client._session, "post")
+def _mock_realtime(mocker, *, document="A", revision=4, clients=None, maximum=100000):
+    realtime = mocker.Mock()
+    realtime.document = document
+    realtime.revision = revision
+    realtime.clients = clients or {}
+    realtime.doc_state = {"str": document, "revision": revision, "clients": realtime.clients}
+    realtime.refresh_state = {"docmaxlength": maximum, "permission": "private"}
+    realtime.replace_document.return_value = RealtimeUpdateResult(revision, revision + 1)
+    realtime.update_progress.return_value = RealtimeUpdateResult(revision, revision)
+    realtime_class = mocker.patch("hedgedoc_mcp.client.HedgeDocRealtimeSession")
+    realtime_class.return_value.__enter__.return_value = realtime
+    return realtime, realtime_class
 
-    with pytest.raises(HedgeDocError, match="Updating notes is unsupported"):
-        client.update_note("my-alias", "# Replacement")
 
-    post.assert_not_called()
+def test_update_note_replaces_and_verifies_content(client, mocker):
+    realtime, _class = _mock_realtime(mocker)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="B"))
+
+    result = client.update_note("abc", "B")
+
+    realtime.replace_document.assert_called_once_with("B")
+    assert result.updated is True
+    assert result.no_op is False
+    assert result.operation_acknowledged is True
+    assert result.check_received is True
+    assert result.content_verified is True
+    assert result.persistence_verified is True
+    assert result.revision_before == 4
+    assert result.revision_after == 5
+
+
+@pytest.mark.parametrize(("current", "replacement"), [("", "B"), ("A", "")])
+def test_update_note_handles_empty_documents(client, mocker, current, replacement):
+    realtime, _class = _mock_realtime(mocker, document=current)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text=replacement))
+
+    result = client.update_note("abc", replacement)
+
+    realtime.replace_document.assert_called_once_with(replacement)
+    assert result.updated is True
+
+
+def test_update_note_identical_content_is_verified_noop(client, mocker):
+    realtime, _class = _mock_realtime(mocker, document="same", revision=9)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="same"))
+
+    result = client.update_note("abc", "same")
+
+    realtime.replace_document.assert_not_called()
+    assert result.updated is False
+    assert result.no_op is True
+    assert result.operation_submitted is False
+    assert result.content_verified is True
+    assert result.persistence_verified is True
+    assert result.revision_before == result.revision_after == 9
+
+
+def test_update_note_readback_mismatch_is_machine_readable(client, mocker):
+    _realtime, _class = _mock_realtime(mocker)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="not B"))
+
+    with pytest.raises(NoteUpdateError, match="did not match") as raised:
+        client.update_note("abc", "B")
+
+    details = raised.value.recovery_details()
+    assert details["operation_acknowledged"] is True
+    assert details["check_received"] is True
+    assert details["content_verified"] is False
+    assert details["persistence_verified"] is False
+    assert details["expected_content_sha256"] == content_sha256("B")
+    assert details["actual_content_sha256"] == content_sha256("not B")
+    assert "B" not in details.values()
+
+
+def test_update_note_reports_initial_editor_conflict_without_submission(client, mocker):
+    realtime, _class = _mock_realtime(mocker)
+    protocol = RealtimeUpdateResult(
+        4,
+        4,
+        operation_submitted=False,
+        operation_acknowledged=False,
+        concurrency_detected=True,
+        check_received=False,
+    )
+    realtime.replace_document.side_effect = RealtimeConflictError("editor connected", protocol)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="A"))
+
+    with pytest.raises(NoteUpdateError) as raised:
+        client.update_note("abc", "B")
+
+    details = raised.value.recovery_details()
+    assert details["operation_submitted"] is False
+    assert details["concurrency_detected"] is True
+
+
+def test_update_note_reports_post_submission_conflict_and_final_hash(client, mocker):
+    realtime, _class = _mock_realtime(mocker)
+    protocol = RealtimeUpdateResult(4, 6, concurrency_detected=True)
+    realtime.replace_document.side_effect = RealtimeConflictError(
+        "may already have transformed and applied", protocol
+    )
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="merged"))
+
+    with pytest.raises(NoteUpdateError, match="transformed") as raised:
+        client.update_note("abc", "B")
+
+    details = raised.value.recovery_details()
+    assert details["operation_submitted"] is True
+    assert details["operation_acknowledged"] is True
+    assert details["concurrency_detected"] is True
+    assert details["revision_after"] == 6
+    assert details["actual_content_sha256"] == content_sha256("merged")
+
+
+def test_update_note_conflict_reports_matching_persisted_content(client, mocker):
+    realtime, _class = _mock_realtime(mocker)
+    protocol = RealtimeUpdateResult(4, 6, concurrency_detected=True)
+    realtime.replace_document.side_effect = RealtimeConflictError("conflict", protocol)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="B"))
+
+    with pytest.raises(NoteUpdateError) as raised:
+        client.update_note("abc", "B")
+
+    details = raised.value.recovery_details()
+    assert details["updated"] is False
+    assert details["concurrency_detected"] is True
+    assert details["content_verified"] is True
+    assert details["persistence_verified"] is True
+
+
+def test_update_note_reports_authorization_ack_timeout(client, mocker):
+    realtime, _class = _mock_realtime(mocker)
+    realtime.replace_document.side_effect = RealtimeTimeoutError(
+        "Timed out waiting for the text-operation acknowledgement."
+    )
+    realtime.update_progress.return_value = RealtimeUpdateResult(
+        4,
+        4,
+        operation_submitted=True,
+        operation_acknowledged=False,
+        check_received=False,
+    )
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="A"))
+
+    with pytest.raises(NoteUpdateError, match="acknowledgement") as raised:
+        client.update_note("abc", "B")
+
+    assert raised.value.result.operation_submitted is True
+    assert raised.value.result.operation_acknowledged is False
+
+
+def test_update_note_rejects_document_over_limit_before_submission(client, mocker):
+    realtime, _class = _mock_realtime(mocker, maximum=2)
+
+    with pytest.raises(NoteUpdateError, match="document limit") as raised:
+        client.update_note("abc", "😀x")
+
+    realtime.replace_document.assert_not_called()
+    assert raised.value.result.operation_submitted is False
+
+
+def test_update_note_allows_oversized_document_to_shrink(client, mocker):
+    realtime, _class = _mock_realtime(mocker, document="oversized", maximum=2)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="less"))
+
+    result = client.update_note("abc", "less")
+
+    realtime.replace_document.assert_called_once_with("less")
+    assert result.updated is True
+
+
+def test_update_note_context_cleans_up_after_success_and_failure(client, mocker):
+    realtime, realtime_class = _mock_realtime(mocker)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="B"))
+    client.update_note("abc", "B")
+    realtime_class.return_value.__exit__.assert_called_once()
+
+    realtime.replace_document.side_effect = RealtimeTimeoutError("no ack")
+    realtime.update_progress.return_value = RealtimeUpdateResult(4, 4)
+    with pytest.raises(NoteUpdateError):
+        client.update_note("abc", "C")
+    assert realtime_class.return_value.__exit__.call_count == 2
 
 
 def test_create_note_without_permission_preserves_server_default(client, mocker):

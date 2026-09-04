@@ -36,11 +36,24 @@ FreeURL enabled, the first request for an alias creates the note; a second
 request for that alias returns **HTTP 409 Conflict** and leaves the original
 content unchanged.
 
-`hedgedoc_update_note` therefore reports a clear unsupported-operation error
-without issuing an HTTP request. Neither alias nor random-ID notes can be
-updated through HedgeDoc 1.x's HTTP surface. They can be edited in the
-browser, which uses the Socket.IO collaborative-editing protocol; supporting
-that protocol is outside this HTTP client's current scope.
+`hedgedoc_update_note` uses a bounded subset of the browser's Socket.IO and
+Operational Transform protocol: it joins the current document, submits one
+full-document replacement, waits for acknowledgement and HedgeDoc's database
+update signal, then requires exact content through the ordinary HTTP read path.
+It is not a continuous collaborative editor and does not implement local edit
+buffering, cursor state, undo, or automatic retry.
+
+The operation uses HedgeDoc's UTF-16 indexing and is submitted only when no
+other editor appears in the initial editing snapshot. Concurrent activity
+during submission produces a structured conflict rather than an automatic
+overwrite. HedgeDoc transforms stale operations instead of providing atomic
+compare-and-swap, so a conflict detected after submission can mean the
+transformed replacement has already affected the note. Success is reported
+only when the persisted HTTP content exactly matches the request.
+
+The post-operation signal confirms the normal `Note` database update. HedgeDoc
+creates historical `Revision` snapshots separately on its own schedule; update
+success does not claim that a new historical snapshot already exists.
 
 ## Note permissions use Socket.IO
 
@@ -108,8 +121,7 @@ expires.
 | Create note (custom alias) | ✅* | Requires `CMD_ALLOW_FREEURL=true` on the server |
 | Change note permission | ✅ | Owner-only Socket.IO metadata event; persistence is verified |
 | Read note content | ✅ | Public endpoint, no auth needed |
-| Update note (alias-based) | ❌ | `POST /new/{alias}` returns 409 when it already exists |
-| Update note (random-ID) | ❌ | Not possible over HTTP in HedgeDoc 1.x |
+| Replace existing note | ✅ | Bounded Socket.IO/OT operation with conflict detection and HTTP verification |
 | Delete note | ❌ | Only via the web UI, not exposed by this project |
 | Note metadata (title, views, dates) | ✅ | `hedgedoc_note_info` |
 | List revision history | 🟡 | `client.py` exposes it at the client level; not yet wired to an MCP tool |

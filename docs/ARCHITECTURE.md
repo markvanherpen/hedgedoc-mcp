@@ -1,6 +1,6 @@
 # Architecture
 
-This project has three layers, each independently usable:
+This project has four layers, with the client and transport independently usable:
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -28,7 +28,7 @@ This project has three layers, each independently usable:
 └────────────────────────────────────────────────┘
 ```
 
-## Why three layers, not one file
+## Why separate layers, not one file
 
 - **`client.py` has zero MCP dependencies.** You can `pip install
   hedgedoc-mcp` and use `HedgeDocClient` directly in a script, a cron job,
@@ -51,13 +51,11 @@ This project has three layers, each independently usable:
   agent session self-heals instead of failing the tool call outright.
 
 - **`realtime.py` owns note-scoped Socket.IO infrastructure.** It reuses
-  the HTTP cookie jar, joins by note ID, captures initial and requested
-  refresh state, handles realtime errors and timeouts, and guarantees
-  cleanup. Permission mutation uses this transport without implementing
-  or abstracting HedgeDoc's Operational Transform protocol. A future OT
-  client can reuse the authenticated connection and lifecycle while adding
-  document revisions, operations, transforms, resynchronization, and
-  authorship handling separately.
+  the HTTP cookie jar, joins by note ID, captures document and metadata state,
+  handles realtime errors and timeouts, and guarantees cleanup. Permission
+  mutation uses metadata events. Text replacement uses one full-document OT
+  operation with acknowledgement, concurrent-operation detection, and the
+  post-update `check`; it is deliberately not a general collaborative editor.
 
 ## Authentication flow in detail
 

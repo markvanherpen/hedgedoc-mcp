@@ -19,6 +19,7 @@ Endpoints used (from HedgeDoc's own OpenAPI spec, version 1.11.1):
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from urllib.parse import quote, unquote
@@ -28,7 +29,10 @@ import requests
 from .realtime import (
     HedgeDocRealtimeSession,
     RealtimeAuthenticationError,
+    RealtimeConflictError,
     RealtimeError,
+    RealtimeUpdateResult,
+    utf16_length,
 )
 
 PERMISSION_VALUES = frozenset({"freely", "editable", "limited", "locked", "protected", "private"})
@@ -79,6 +83,58 @@ class PermissionChangeError(HedgeDocError):
             "permission_verified": False,
             "error": str(self),
         }
+
+
+@dataclass(frozen=True)
+class NoteUpdateResult:
+    """Machine-readable outcome of a verified one-shot note replacement."""
+
+    note_id: str
+    updated: bool
+    no_op: bool
+    operation_submitted: bool
+    operation_acknowledged: bool
+    concurrency_detected: bool
+    check_received: bool
+    content_verified: bool
+    persistence_verified: bool
+    revision_before: int
+    revision_after: int
+    expected_content_sha256: str
+    actual_content_sha256: str | None
+
+    def as_dict(self) -> dict:
+        return {
+            "note_id": self.note_id,
+            "updated": self.updated,
+            "no_op": self.no_op,
+            "operation_submitted": self.operation_submitted,
+            "operation_acknowledged": self.operation_acknowledged,
+            "concurrency_detected": self.concurrency_detected,
+            "check_received": self.check_received,
+            "content_verified": self.content_verified,
+            "persistence_verified": self.persistence_verified,
+            "revision_before": self.revision_before,
+            "revision_after": self.revision_after,
+            "expected_content_sha256": self.expected_content_sha256,
+            "actual_content_sha256": self.actual_content_sha256,
+        }
+
+
+class NoteUpdateError(HedgeDocError):
+    """A replacement was refused, conflicted, or could not be verified."""
+
+    def __init__(self, message: str, result: NoteUpdateResult):
+        super().__init__(message)
+        self.result = result
+
+    def recovery_details(self) -> dict:
+        return {**self.result.as_dict(), "error": str(self)}
+
+
+def content_sha256(content: str) -> str:
+    """Hash note content without exposing it in machine-readable failures."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -267,19 +323,195 @@ class HedgeDocClient:
         resp.raise_for_status()
         return resp.text
 
-    def update_note(self, note_id: str, content: str) -> None:
-        """Raise because HedgeDoc 1.x has no supported HTTP update endpoint.
+    def update_note(self, note_id: str, content: str) -> NoteUpdateResult:
+        """Replace one existing note through a bounded HedgeDoc OT operation.
 
-        The browser edits through its Socket.IO collaborative-editing
-        protocol. ``POST /new/{alias}`` only creates a new alias; it returns
-        HTTP 409 when the alias already exists and does not alter that note.
+        Success requires an acknowledgement, no observed concurrent operation,
+        HedgeDoc's post-update ``check``, and exact HTTP content read-back.
         """
-        del note_id, content
-        raise HedgeDocError(
-            "Updating notes is unsupported: HedgeDoc 1.x has no HTTP update endpoint. "
-            "POST /new/{alias} creates notes only and returns HTTP 409 for an existing alias. "
-            "See docs/LIMITATIONS.md."
+        expected_hash = content_sha256(content)
+        realtime: HedgeDocRealtimeSession | None = None
+        try:
+            with HedgeDocRealtimeSession(
+                base_url=self.base_url,
+                note_id=note_id,
+                http_session=self._session,
+                session_cookie_name=self.session_cookie_name,
+                timeout=self.timeout,
+            ) as realtime:
+                revision = realtime.revision
+                current = realtime.document
+                if current == content:
+                    actual = self.read_note(note_id)
+                    actual_hash = content_sha256(actual)
+                    if actual != content:
+                        result = self._update_result(
+                            note_id,
+                            expected_hash,
+                            actual_hash,
+                            revision,
+                            revision,
+                            no_op=True,
+                        )
+                        raise NoteUpdateError(
+                            "Realtime state matched the request, but HTTP read-back did not.",
+                            result,
+                        )
+                    return self._update_result(
+                        note_id,
+                        expected_hash,
+                        actual_hash,
+                        revision,
+                        revision,
+                        no_op=True,
+                        content_verified=True,
+                        persistence_verified=True,
+                    )
+
+                maximum = realtime.refresh_state.get("docmaxlength")
+                if not isinstance(maximum, int) or isinstance(maximum, bool) or maximum < 0:
+                    raise RealtimeError("HedgeDoc did not provide a valid document length limit.")
+                content_length = utf16_length(content)
+                if content_length > maximum and content_length > utf16_length(current):
+                    result = self._update_result(
+                        note_id,
+                        expected_hash,
+                        content_sha256(current),
+                        revision,
+                        revision,
+                    )
+                    raise NoteUpdateError(
+                        f"Replacement exceeds HedgeDoc's {maximum}-UTF-16-unit document limit.",
+                        result,
+                    )
+
+                try:
+                    protocol_result = realtime.replace_document(content)
+                except RealtimeConflictError as exc:
+                    actual = self._read_after_update_failure(note_id)
+                    content_verified = actual == content
+                    result = self._result_from_protocol(
+                        note_id,
+                        expected_hash,
+                        actual,
+                        exc.result,
+                        content_verified=content_verified,
+                        persistence_verified=content_verified and exc.result.check_received,
+                    )
+                    raise NoteUpdateError(str(exc), result) from exc
+                except RealtimeError as exc:
+                    actual = self._read_after_update_failure(note_id)
+                    progress = realtime.update_progress()
+                    content_verified = actual == content
+                    result = self._result_from_protocol(
+                        note_id,
+                        expected_hash,
+                        actual,
+                        progress,
+                        content_verified=content_verified,
+                        persistence_verified=content_verified and progress.check_received,
+                    )
+                    raise NoteUpdateError(str(exc), result) from exc
+
+                actual = self.read_note(note_id)
+                actual_hash = content_sha256(actual)
+                content_verified = actual == content
+                result = self._result_from_protocol(
+                    note_id,
+                    expected_hash,
+                    actual,
+                    protocol_result,
+                    updated=content_verified,
+                    content_verified=content_verified,
+                    persistence_verified=content_verified and protocol_result.check_received,
+                )
+                if not content_verified:
+                    raise NoteUpdateError(
+                        "HedgeDoc acknowledged the operation, but persisted HTTP content did not "
+                        "match the requested replacement.",
+                        result,
+                    )
+                return result
+        except RealtimeAuthenticationError as exc:
+            raise SessionExpiredError(str(exc)) from exc
+        except NoteUpdateError:
+            raise
+        except RealtimeError as exc:
+            revision = realtime.revision if realtime and realtime.doc_state else 0
+            current_hash = (
+                content_sha256(realtime.document) if realtime and realtime.doc_state else None
+            )
+            result = self._update_result(
+                note_id,
+                expected_hash,
+                current_hash,
+                revision,
+                revision,
+            )
+            raise NoteUpdateError(str(exc), result) from exc
+
+    @staticmethod
+    def _update_result(
+        note_id: str,
+        expected_hash: str,
+        actual_hash: str | None,
+        revision_before: int,
+        revision_after: int,
+        *,
+        updated: bool = False,
+        no_op: bool = False,
+        operation_submitted: bool = False,
+        operation_acknowledged: bool = False,
+        concurrency_detected: bool = False,
+        check_received: bool = False,
+        content_verified: bool = False,
+        persistence_verified: bool = False,
+    ) -> NoteUpdateResult:
+        return NoteUpdateResult(
+            note_id=note_id,
+            updated=updated,
+            no_op=no_op,
+            operation_submitted=operation_submitted,
+            operation_acknowledged=operation_acknowledged,
+            concurrency_detected=concurrency_detected,
+            check_received=check_received,
+            content_verified=content_verified,
+            persistence_verified=persistence_verified,
+            revision_before=revision_before,
+            revision_after=revision_after,
+            expected_content_sha256=expected_hash,
+            actual_content_sha256=actual_hash,
         )
+
+    def _result_from_protocol(
+        self,
+        note_id: str,
+        expected_hash: str,
+        actual_content: str | None,
+        protocol: RealtimeUpdateResult,
+        **overrides: bool,
+    ) -> NoteUpdateResult:
+        values = {
+            "operation_submitted": protocol.operation_submitted,
+            "operation_acknowledged": protocol.operation_acknowledged,
+            "concurrency_detected": protocol.concurrency_detected,
+            "check_received": protocol.check_received,
+            **overrides,
+        }
+        return self._update_result(
+            note_id,
+            expected_hash,
+            content_sha256(actual_content) if actual_content is not None else None,
+            protocol.revision_before,
+            protocol.revision_after,
+            **values,
+        )
+
+    def _read_after_update_failure(self, note_id: str) -> str | None:
+        try:
+            return self.read_note(note_id)
+        except (HedgeDocError, requests.RequestException):
+            return None
 
     def note_info(self, note_id: str) -> NoteInfo:
         """Fetch metadata: title, description, viewcount, timestamps."""

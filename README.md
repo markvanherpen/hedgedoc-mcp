@@ -16,7 +16,7 @@ This project does the unglamorous work of handling that correctly — login, coo
 
 - 🔐 **Handles HedgeDoc 1.x's real auth model** (session cookies, not tokens)
 - 🔁 **Auto re-login on session expiry** — no manual cookie refresh needed
-- 🛠️ **6 MCP tools**: create, read, update (reported as unsupported), info, whoami, history
+- 🛠️ **7 MCP tools**: create, permission management, read, bounded update, info, whoami, history
 - 🐍 **Standalone Python client** (`hedgedoc_mcp.client.HedgeDocClient`) usable outside MCP too
 - ✅ **Fully tested** — mocked HTTP, no live server required to run the test suite
 - 📦 **Works with any MCP client**: Claude Code, Codex, Hermes, Cursor, custom clients
@@ -147,7 +147,7 @@ This is a standard stdio MCP server. Point your client at `uvx hedgedoc-mcp` (or
 | `hedgedoc_create_note` | Create a note, optionally with an alias and explicit HedgeDoc permission. Omission preserves the server default. |
 | `hedgedoc_set_permission` | Change a note's permission and confirm it through HedgeDoc's post-update broadcast and refreshed realtime state (owner only). |
 | `hedgedoc_read_note` | Fetch a note's raw markdown content by ID or alias. |
-| `hedgedoc_update_note` | Reports that HedgeDoc 1.x HTTP note updates are unsupported; it does not modify the note. |
+| `hedgedoc_update_note` | Replace an existing note with one bounded Socket.IO/OT operation and verify persisted content. |
 | `hedgedoc_note_info` | Get a note's title, description, view count, and timestamps. |
 | `hedgedoc_whoami` | Verify the session is valid and show the logged-in user. |
 | `hedgedoc_list_history` | List the logged-in user's recently viewed/pinned notes. |
@@ -167,6 +167,7 @@ print(result.url)
 
 # Or change an existing note. The caller must own it.
 client.set_permission(result.note_id, "private")
+client.update_note(result.note_id, "# Revised research notes")
 
 content = client.read_note(result.note_id)
 info = client.note_info(result.note_id)
@@ -177,7 +178,7 @@ info = client.note_info(result.note_id)
 HedgeDoc 1.x's HTTP API is genuinely limited compared to newer forks — see [docs/LIMITATIONS.md](docs/LIMITATIONS.md) for the full rundown, including:
 
 - No API tokens (session-cookie auth only)
-- No HTTP note-update endpoint
+- No HTTP note-update endpoint (updates use the bounded realtime OT flow)
 - No delete endpoint over HTTP
 
 These are constraints of the HedgeDoc 1.x server itself, not this client — the docs explain the workarounds this project uses and what genuinely isn't possible.
