@@ -218,6 +218,8 @@ def test_update_note_replaces_and_verifies_content(client, mocker):
     assert result.persistence_verified is True
     assert result.revision_before == 4
     assert result.revision_after == 5
+    assert result.condition_matched is None
+    assert result.expected_previous_content_sha256 is None
 
 
 def test_read_note_with_fingerprint_preserves_string_read_contract(client, mocker):
@@ -269,6 +271,8 @@ def test_update_note_allows_matching_content_fingerprint(client, mocker):
 
     realtime.replace_document.assert_called_once_with("replacement")
     assert result.updated is True
+    assert result.condition_matched is True
+    assert result.expected_previous_content_sha256 == content_sha256("current")
 
 
 @pytest.mark.parametrize(("current", "replacement"), [("", "B"), ("A", "")])
@@ -295,6 +299,21 @@ def test_update_note_identical_content_is_verified_noop(client, mocker):
     assert result.content_verified is True
     assert result.persistence_verified is True
     assert result.revision_before == result.revision_after == 9
+
+
+def test_conditional_update_identical_content_is_verified_noop(client, mocker):
+    realtime, _class = _mock_realtime(mocker, document="same", revision=9)
+    mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="same"))
+    fingerprint = content_sha256("same")
+
+    result = client.update_note("abc", "same", expected_content_sha256=fingerprint)
+
+    realtime.replace_document.assert_not_called()
+    assert result.no_op is True
+    assert result.content_verified is True
+    assert result.persistence_verified is True
+    assert result.condition_matched is True
+    assert result.expected_previous_content_sha256 == fingerprint
 
 
 def test_update_note_readback_mismatch_is_machine_readable(client, mocker):
@@ -344,7 +363,7 @@ def test_update_note_reports_post_submission_conflict_and_final_hash(client, moc
     mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="merged"))
 
     with pytest.raises(NoteUpdateError, match="transformed") as raised:
-        client.update_note("abc", "B")
+        client.update_note("abc", "B", expected_content_sha256=content_sha256("A"))
 
     details = raised.value.recovery_details()
     assert details["operation_submitted"] is True
@@ -352,6 +371,8 @@ def test_update_note_reports_post_submission_conflict_and_final_hash(client, moc
     assert details["concurrency_detected"] is True
     assert details["revision_after"] == 6
     assert details["actual_content_sha256"] == content_sha256("merged")
+    assert details["condition_matched"] is True
+    assert details["expected_previous_content_sha256"] == content_sha256("A")
 
 
 def test_update_note_conflict_reports_matching_persisted_content(client, mocker):
@@ -385,10 +406,12 @@ def test_update_note_reports_authorization_ack_timeout(client, mocker):
     mocker.patch.object(client._session, "get", return_value=_FakeResponse(text="A"))
 
     with pytest.raises(NoteUpdateError, match="acknowledgement") as raised:
-        client.update_note("abc", "B")
+        client.update_note("abc", "B", expected_content_sha256=content_sha256("A"))
 
     assert raised.value.result.operation_submitted is True
     assert raised.value.result.operation_acknowledged is False
+    assert raised.value.result.condition_matched is True
+    assert raised.value.result.expected_previous_content_sha256 == content_sha256("A")
 
 
 def test_update_note_rejects_document_over_limit_before_submission(client, mocker):

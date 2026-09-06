@@ -373,6 +373,7 @@ class HedgeDocClient:
         if expected_content_sha256 is not None:
             expected_content_sha256 = validate_content_sha256(expected_content_sha256)
         replacement_hash = content_sha256(content)
+        condition_result_fields: dict[str, str | bool] = {}
         realtime: HedgeDocRealtimeSession | None = None
         try:
             with HedgeDocRealtimeSession(
@@ -400,6 +401,11 @@ class HedgeDocClient:
                         "no update was submitted.",
                         result,
                     )
+                if expected_content_sha256 is not None:
+                    condition_result_fields = {
+                        "expected_previous_content_sha256": expected_content_sha256,
+                        "condition_matched": True,
+                    }
                 if current == content:
                     actual = self.read_note(note_id)
                     actual_hash = content_sha256(actual)
@@ -411,6 +417,7 @@ class HedgeDocClient:
                             revision,
                             revision,
                             no_op=True,
+                            **condition_result_fields,
                         )
                         raise NoteUpdateError(
                             "Realtime state matched the request, but HTTP read-back did not.",
@@ -425,6 +432,7 @@ class HedgeDocClient:
                         no_op=True,
                         content_verified=True,
                         persistence_verified=True,
+                        **condition_result_fields,
                     )
 
                 maximum = realtime.refresh_state.get("docmaxlength")
@@ -438,6 +446,7 @@ class HedgeDocClient:
                         content_sha256(current),
                         revision,
                         revision,
+                        **condition_result_fields,
                     )
                     raise NoteUpdateError(
                         f"Replacement exceeds HedgeDoc's {maximum}-UTF-16-unit document limit.",
@@ -456,6 +465,7 @@ class HedgeDocClient:
                         exc.result,
                         content_verified=content_verified,
                         persistence_verified=content_verified and exc.result.check_received,
+                        **condition_result_fields,
                     )
                     raise NoteUpdateError(str(exc), result) from exc
                 except RealtimeError as exc:
@@ -469,6 +479,7 @@ class HedgeDocClient:
                         progress,
                         content_verified=content_verified,
                         persistence_verified=content_verified and progress.check_received,
+                        **condition_result_fields,
                     )
                     raise NoteUpdateError(str(exc), result) from exc
 
@@ -483,6 +494,7 @@ class HedgeDocClient:
                     updated=content_verified,
                     content_verified=content_verified,
                     persistence_verified=content_verified and protocol_result.check_received,
+                    **condition_result_fields,
                 )
                 if not content_verified:
                     raise NoteUpdateError(
@@ -506,6 +518,7 @@ class HedgeDocClient:
                 current_hash,
                 revision,
                 revision,
+                **condition_result_fields,
             )
             raise NoteUpdateError(str(exc), result) from exc
 
@@ -552,7 +565,7 @@ class HedgeDocClient:
         expected_hash: str,
         actual_content: str | None,
         protocol: RealtimeUpdateResult,
-        **overrides: bool,
+        **overrides: object,
     ) -> NoteUpdateResult:
         values = {
             "operation_submitted": protocol.operation_submitted,
