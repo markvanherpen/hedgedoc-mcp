@@ -32,6 +32,17 @@ server = Server("hedgedoc-mcp")
 
 _client = None  # lazily built on first tool call, so import-time never needs network
 
+# A SessionExpiredError after a mutation may be reported after the server has
+# accepted part or all of the operation.  Only these observational operations
+# are safe for the automatic fresh-login retry below.
+_SAFE_SESSION_RETRY_TOOLS = {
+    "hedgedoc_read_note",
+    "hedgedoc_read_note_with_fingerprint",
+    "hedgedoc_note_info",
+    "hedgedoc_whoami",
+    "hedgedoc_list_history",
+}
+
 
 def _get_client():
     global _client
@@ -258,8 +269,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         client = _get_client()
         result = await asyncio.to_thread(_dispatch, client, name, arguments)
         return [TextContent(type="text", text=result)]
-    except SessionExpiredError:
-        # One automatic retry: rebuild the client (fresh login) and try once more.
+    except SessionExpiredError as error:
+        if name not in _SAFE_SESSION_RETRY_TOOLS:
+            # Never retry a write whose server-side outcome is uncertain.
+            return [TextContent(type="text", text=f"Error: {error}")]
+        # One automatic retry for an observational operation: rebuild the
+        # client (fresh login) and try once more.
         _reset_client()
         try:
             client = _get_client()

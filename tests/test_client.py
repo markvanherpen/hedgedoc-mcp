@@ -70,6 +70,14 @@ def test_login_failure_raises(client, mocker):
         client.login("user@example.com", "wrong")
 
 
+def test_login_does_not_accept_a_rate_limit_cookie(client, mocker):
+    mocker.patch.object(client._session, "post", return_value=_FakeResponse(status_code=429))
+    client._session.cookies.set("connect.sid", "rate-limit-cookie", domain="md.example.com")
+
+    with pytest.raises(HedgeDocError, match="HTTP 429"):
+        client.login("user@example.com", "password")
+
+
 def test_set_session_cookie_decodes_urlencoded(client):
     client.set_session_cookie("s%3AaBc123")
     assert client.get_session_cookie(encoded=False) == "s:aBc123"
@@ -558,6 +566,36 @@ def test_read_note_not_found_raises(client, mocker):
     mocker.patch.object(client._session, "get", return_value=_FakeResponse(status_code=404))
     with pytest.raises(HedgeDocError, match="not found"):
         client.read_note("missing")
+
+
+def test_read_note_html_forbidden_page_triggers_session_recovery(client, mocker):
+    mocker.patch.object(
+        client._session,
+        "get",
+        side_effect=[
+            _FakeResponse(
+                status_code=200,
+                text="<!DOCTYPE html><html><body>Sign In</body></html>",
+                headers={"Content-Type": "text/html"},
+            ),
+            _FakeResponse(json_data={"status": "forbidden"}),
+        ],
+    )
+    with pytest.raises(SessionExpiredError):
+        client.read_note("abc")
+
+
+def test_read_note_html_with_valid_auth_is_protocol_error(client, mocker):
+    mocker.patch.object(
+        client._session,
+        "get",
+        side_effect=[
+            _FakeResponse(status_code=200, text="<html>unexpected</html>"),
+            _FakeResponse(json_data={"status": "ok", "name": "agent-home"}),
+        ],
+    )
+    with pytest.raises(HedgeDocError, match="unexpected HTML"):
+        client.read_note("abc")
 
 
 def test_note_info_success(client, mocker):

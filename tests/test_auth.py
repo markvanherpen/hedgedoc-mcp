@@ -62,6 +62,36 @@ def test_config_from_env_with_login(monkeypatch):
     assert config.email == "a@b.com"
 
 
+def test_config_reads_a_protected_session_cookie_cache(monkeypatch, tmp_path):
+    cache = tmp_path / "session"
+    cache.write_text("cached-cookie\n")
+    cache.chmod(0o600)
+    monkeypatch.setenv("HEDGEDOC_URL", "https://md.example.com")
+    monkeypatch.delenv("HEDGEDOC_SESSION_COOKIE", raising=False)
+    monkeypatch.setenv("HEDGEDOC_SESSION_COOKIE_FILE", str(cache))
+    monkeypatch.delenv("HEDGEDOC_EMAIL", raising=False)
+    monkeypatch.delenv("HEDGEDOC_PASSWORD", raising=False)
+
+    config = Config.from_env()
+
+    assert config.session_cookie == "cached-cookie"
+    assert config.session_cookie_file == cache
+
+
+def test_config_rejects_an_unsafe_session_cookie_cache(monkeypatch, tmp_path):
+    cache = tmp_path / "session"
+    cache.write_text("cached-cookie\n")
+    cache.chmod(0o644)
+    monkeypatch.setenv("HEDGEDOC_URL", "https://md.example.com")
+    monkeypatch.delenv("HEDGEDOC_SESSION_COOKIE", raising=False)
+    monkeypatch.setenv("HEDGEDOC_SESSION_COOKIE_FILE", str(cache))
+    monkeypatch.delenv("HEDGEDOC_EMAIL", raising=False)
+    monkeypatch.delenv("HEDGEDOC_PASSWORD", raising=False)
+
+    with pytest.raises(ConfigError, match="mode 0600"):
+        Config.from_env()
+
+
 def test_build_client_uses_valid_cookie(mocker):
     config = Config(
         base_url="https://md.example.com", session_cookie="valid", email=None, password=None
@@ -148,6 +178,21 @@ def test_build_client_uses_login_when_no_cookie(mocker):
 
     build_client(config)
     login_spy.assert_called_once_with("a@b.com", "secret")
+
+
+def test_build_client_persists_an_automatically_refreshed_cookie(mocker, tmp_path):
+    cache = tmp_path / "session"
+    config = Config(
+        base_url="https://md.example.com", session_cookie=None, email="a@b.com", password="secret",
+        session_cookie_file=cache,
+    )
+    client_class = mocker.patch("hedgedoc_mcp.auth.HedgeDocClient")
+    client_class.return_value.login.return_value = "renewed-cookie"
+
+    build_client(config)
+
+    assert cache.read_text() == "renewed-cookie\n"
+    assert cache.stat().st_mode & 0o777 == 0o600
 
 
 def test_cli_login_writes_custom_cookie_name_to_env_file(monkeypatch, mocker, tmp_path):

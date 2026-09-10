@@ -79,6 +79,14 @@ export HEDGEDOC_EMAIL=you@example.com            # for auto re-login
 export HEDGEDOC_PASSWORD=your-password
 ```
 
+For short-lived MCP processes, set `HEDGEDOC_SESSION_COOKIE_FILE` to an
+absolute, user-owned mode-`0600` path. A successful password login stores the
+session there atomically; later processes reuse it and only refresh it when it
+has expired. This prevents a burst of independent launches from repeatedly
+logging in. Never commit this file. The server retries only observational
+operations after a session refresh; it never automatically retries a write
+whose outcome could be uncertain.
+
 At minimum you need `HEDGEDOC_URL` plus either the cookie or the email+password pair. Setting both is recommended — the cookie is used as a fast path, and email/password is the automatic fallback whenever it expires.
 
 `HEDGEDOC_SESSION_COOKIE_NAME` defaults to `connect.sid`. Set it to the valid cookie name configured by your HedgeDoc instance (for example, `hedgedoc.sid`) so both login and manually supplied cookies use the right session.

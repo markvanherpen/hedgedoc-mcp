@@ -226,7 +226,9 @@ class HedgeDocClient:
             timeout=self.timeout,
         )
         cookie = self._session.cookies.get(self.session_cookie_name)
-        if not cookie:
+        # A rate-limit/failed-login response can still set a cookie.  It is
+        # not an authenticated session and must never be accepted or cached.
+        if resp.status_code not in {200, 302} or not cookie:
             raise HedgeDocError(
                 f"Login failed (HTTP {resp.status_code}). Check that email/password "
                 "auth is enabled on this HedgeDoc instance (CMD_EMAIL=true) and that "
@@ -346,6 +348,18 @@ class HedgeDocClient:
         if resp.status_code == 404:
             raise HedgeDocError(f"Note '{note_id}' not found.")
         resp.raise_for_status()
+        # HedgeDoc returns its HTML sign-in/forbidden page with HTTP 200 for an
+        # expired session on this endpoint.  Do not hand that page to callers
+        # as note content: confirm authentication so the MCP server can use
+        # its existing one-shot rebuild/login recovery for SessionExpiredError.
+        body = resp.text.lstrip()
+        content_type = resp.headers.get("Content-Type", "").lower()
+        if "text/html" in content_type or body.startswith("<!DOCTYPE html") or body.startswith("<html"):
+            try:
+                self.whoami()
+            except SessionExpiredError:
+                raise
+            raise HedgeDocError("HedgeDoc returned unexpected HTML instead of note markdown.")
         return resp.text
 
     def read_note_with_fingerprint(self, note_id: str) -> NoteReadResult:

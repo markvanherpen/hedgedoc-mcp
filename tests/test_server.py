@@ -11,6 +11,7 @@ from hedgedoc_mcp.client import (
     NoteUpdateError,
     NoteUpdateResult,
     PermissionChangeError,
+    SessionExpiredError,
 )
 
 
@@ -131,6 +132,29 @@ def test_update_failure_is_machine_readable(mocker):
     assert result["updated"] is False
     assert result["concurrency_detected"] is True
     assert "may already be applied" in result["error"]
+
+
+def test_session_expiry_never_retries_a_conditional_update(mocker):
+    client = mocker.Mock()
+    client.update_note.side_effect = SessionExpiredError("session expired after submission")
+    get_client = mocker.patch("hedgedoc_mcp.server._get_client", return_value=client)
+    reset_client = mocker.patch("hedgedoc_mcp.server._reset_client")
+
+    async def run_synchronously(function, *args):
+        return function(*args)
+
+    mocker.patch("hedgedoc_mcp.server.asyncio.to_thread", side_effect=run_synchronously)
+    response = asyncio.run(
+        server.call_tool(
+            "hedgedoc_update_note",
+            {"note_id": "existing", "content": "# Replacement", "expected_content_sha256": "a" * 64},
+        )
+    )
+
+    assert response[0].text == "Error: session expired after submission"
+    client.update_note.assert_called_once()
+    get_client.assert_called_once()
+    reset_client.assert_not_called()
 
 
 def test_create_tool_returns_explicit_permission_verification(mocker):

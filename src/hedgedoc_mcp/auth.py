@@ -9,6 +9,10 @@ Environment variables:
     HEDGEDOC_SESSION_COOKIE   A pre-obtained session cookie value (optional)
     HEDGEDOC_SESSION_COOKIE_NAME
                               Session cookie name (optional; default: connect.sid)
+    HEDGEDOC_SESSION_COOKIE_FILE
+                              Optional protected local cache for automatically
+                              renewed session cookies. The file must be owned
+                              by the current user and mode 0600.
     HEDGEDOC_EMAIL            Login email (optional, used for auto re-login)
     HEDGEDOC_PASSWORD         Login password (optional, used for auto re-login)
 
@@ -22,7 +26,9 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import stat
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -46,6 +52,7 @@ class Config:
     email: str | None
     password: str | None
     session_cookie_name: str = DEFAULT_SESSION_COOKIE_NAME
+    session_cookie_file: Path | None = None
 
     @classmethod
     def from_env(cls) -> Config:
@@ -57,6 +64,9 @@ class Config:
             )
 
         cookie = os.environ.get("HEDGEDOC_SESSION_COOKIE", "").strip() or None
+        cookie_file = _session_cookie_file_from_env()
+        if not cookie and cookie_file and cookie_file.exists():
+            cookie = _read_session_cookie_file(cookie_file)
         cookie_name = os.environ.get(
             "HEDGEDOC_SESSION_COOKIE_NAME", DEFAULT_SESSION_COOKIE_NAME
         ).strip()
@@ -80,7 +90,54 @@ class Config:
             email=email,
             password=password,
             session_cookie_name=cookie_name,
+            session_cookie_file=cookie_file,
         )
+
+
+def _session_cookie_file_from_env() -> Path | None:
+    raw = os.environ.get("HEDGEDOC_SESSION_COOKIE_FILE", "").strip()
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ConfigError("HEDGEDOC_SESSION_COOKIE_FILE must be an absolute path")
+    return path
+
+
+def _read_session_cookie_file(path: Path) -> str:
+    try:
+        info = path.lstat()
+    except OSError as error:
+        raise ConfigError(f"Cannot inspect HEDGEDOC_SESSION_COOKIE_FILE: {error}") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        raise ConfigError("HEDGEDOC_SESSION_COOKIE_FILE must be a regular non-symlink file")
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600:
+        raise ConfigError("HEDGEDOC_SESSION_COOKIE_FILE must be owned by the current user with mode 0600")
+    cookie = path.read_text(encoding="utf-8").strip()
+    if not cookie:
+        raise ConfigError("HEDGEDOC_SESSION_COOKIE_FILE is empty")
+    return cookie
+
+
+def _write_session_cookie_file(path: Path, cookie: str) -> None:
+    """Atomically retain an auto-renewed cookie without exposing it to logs."""
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if path.exists() or path.is_symlink():
+        # Validate the existing target before replacing it; never follow a link.
+        _read_session_cookie_file(path)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(cookie + "\n")
+        os.replace(temporary, path)
+        os.chmod(path, 0o600)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def build_client(config: Config) -> HedgeDocClient:
@@ -100,7 +157,9 @@ def build_client(config: Config) -> HedgeDocClient:
             pass  # fall through to login below
 
     if config.email and config.password:
-        client.login(config.email, config.password)
+        cookie = client.login(config.email, config.password)
+        if config.session_cookie_file:
+            _write_session_cookie_file(config.session_cookie_file, cookie)
         return client
 
     raise ConfigError(
